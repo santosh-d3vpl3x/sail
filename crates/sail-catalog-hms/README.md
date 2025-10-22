@@ -11,13 +11,15 @@ This crate provides a `CatalogProvider` implementation that connects to Apache H
 - **Multi-version Support**: Automatically detects and adapts to HMS versions 2.3.x through 4.0.x
 - **Connection Pooling**: Efficient connection reuse with configurable pool sizes
 - **Metadata Caching**: High-performance caching layer to reduce HMS round-trips
+- **Kerberos Authentication**: Full support for Kerberos/SASL with keytab and ticket cache
+- **Multiple Auth Methods**: No auth, simple username/password, Kerberos, delegation tokens
 - **Async-First**: Built on Tokio for high-performance async I/O
 - **Graceful Degradation**: Automatically falls back to compatible APIs for older HMS versions
 - **ACID Support** (planned): Support for transactional tables in HMS 3.0+
 
 ## Usage
 
-### Configuration
+### Basic Configuration
 
 Add HMS catalog to your LakeSail configuration:
 
@@ -30,7 +32,12 @@ catalog:
     - name: "hive"
       type: "hive_metastore"
       uri: "thrift://localhost:9083"
-      username: "hive"
+
+      # Simple authentication (default)
+      auth:
+        type: "simple"
+        username: "hive"
+        password: null  # Optional
 
       connection_pool:
         max_size: 20
@@ -49,6 +56,45 @@ catalog:
         transport: "framed"
         timeout_ms: 60000
 ```
+
+### Kerberos Authentication
+
+For secure production environments with Kerberos:
+
+```yaml
+catalog:
+  list:
+    - name: "hive_kerb"
+      type: "hive_metastore"
+      uri: "thrift://hms-server.example.com:9083"
+
+      # Kerberos authentication with keytab
+      auth:
+        type: "kerberos"
+        principal: "myapp/hostname@EXAMPLE.COM"
+        keytab: "/etc/security/keytabs/myapp.keytab"
+        service: "hive"
+        mutual_auth: true
+        sasl_qop: "auth"  # Options: auth, auth-int, auth-conf
+
+      connection_pool:
+        max_size: 20
+
+      cache:
+        enabled: true
+        ttl_seconds: 300
+```
+
+**See [Kerberos Setup Guide](docs/kerberos-setup.md) for detailed configuration instructions.**
+
+### Authentication Methods
+
+| Method | Use Case | Configuration |
+|--------|----------|---------------|
+| **None** | Testing only (insecure) | `auth: { type: "none" }` |
+| **Simple** | Basic username/password | `auth: { type: "simple", username: "user", password: "..." }` |
+| **Kerberos** | Secure production (recommended) | `auth: { type: "kerberos", principal: "...", keytab: "..." }` |
+| **Delegation Token** | Hadoop ecosystem integration | `auth: { type: "delegation_token", token: "..." }` |
 
 ### Programmatic Usage
 

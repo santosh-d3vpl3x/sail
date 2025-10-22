@@ -37,13 +37,14 @@
 
 // Re-export commonly used types
 pub use config::{
-    HmsCacheConfig, HmsConfig, HmsConnectionPoolConfig, HmsThriftConfig, ThriftProtocol,
-    ThriftTransport,
+    HmsAuthConfig, HmsCacheConfig, HmsConfig, HmsConnectionPoolConfig, HmsThriftConfig,
+    SaslQop, ThriftProtocol, ThriftTransport,
 };
 pub use error::{HmsError, HmsResult};
 pub use provider::HmsProvider;
 
 // Public modules
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod provider;

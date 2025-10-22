@@ -12,12 +12,9 @@ pub struct HmsConfig {
     /// HMS Thrift URI (e.g., "thrift://localhost:9083")
     pub uri: String,
 
-    /// Username for HMS authentication
-    #[serde(default = "default_username")]
-    pub username: String,
-
-    /// Optional password for HMS authentication
-    pub password: Option<String>,
+    /// Authentication configuration
+    #[serde(default)]
+    pub auth: HmsAuthConfig,
 
     /// Connection pool configuration
     #[serde(default)]
@@ -32,17 +29,127 @@ pub struct HmsConfig {
     pub thrift: HmsThriftConfig,
 }
 
+/// Authentication configuration for HMS
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HmsAuthConfig {
+    /// No authentication (insecure, for testing only)
+    None,
+
+    /// Simple username/password authentication
+    Simple {
+        #[serde(default = "default_username")]
+        username: String,
+        password: Option<String>,
+    },
+
+    /// Kerberos authentication (SASL/GSSAPI)
+    Kerberos {
+        /// Kerberos principal (e.g., "hive/hostname@REALM" or "user@REALM")
+        principal: String,
+
+        /// Path to keytab file (optional, uses ticket cache if not specified)
+        keytab: Option<String>,
+
+        /// Kerberos realm (optional, extracted from principal if not specified)
+        realm: Option<String>,
+
+        /// Service name (default: "hive")
+        #[serde(default = "default_kerberos_service")]
+        service: String,
+
+        /// Service hostname (optional, extracted from HMS URI if not specified)
+        service_hostname: Option<String>,
+
+        /// Enable mutual authentication
+        #[serde(default = "default_mutual_auth")]
+        mutual_auth: bool,
+
+        /// Kerberos configuration file path (optional, uses /etc/krb5.conf by default)
+        krb5_conf: Option<String>,
+
+        /// Enable credential cache (kinit ticket cache)
+        #[serde(default = "default_use_ccache")]
+        use_ccache: bool,
+
+        /// Ticket lifetime in seconds (optional)
+        ticket_lifetime: Option<u64>,
+
+        /// Enable automatic credential renewal
+        #[serde(default = "default_auto_renew")]
+        auto_renew: bool,
+
+        /// SASL quality of protection (auth, auth-int, auth-conf)
+        #[serde(default = "default_sasl_qop")]
+        sasl_qop: SaslQop,
+    },
+
+    /// Delegation token authentication (for Hadoop ecosystem)
+    DelegationToken {
+        /// Delegation token string
+        token: String,
+
+        /// Token identifier (optional)
+        identifier: Option<String>,
+
+        /// Token service (optional)
+        service: Option<String>,
+    },
+}
+
+/// SASL Quality of Protection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SaslQop {
+    /// Authentication only
+    Auth,
+    /// Authentication with integrity protection
+    AuthInt,
+    /// Authentication with confidentiality
+    AuthConf,
+}
+
 impl Default for HmsConfig {
     fn default() -> Self {
         Self {
             name: "hive".to_string(),
             uri: "thrift://localhost:9083".to_string(),
-            username: default_username(),
-            password: None,
+            auth: Default::default(),
             connection_pool: Default::default(),
             cache: Default::default(),
             thrift: Default::default(),
         }
+    }
+}
+
+impl Default for HmsAuthConfig {
+    fn default() -> Self {
+        HmsAuthConfig::Simple {
+            username: default_username(),
+            password: None,
+        }
+    }
+}
+
+impl HmsAuthConfig {
+    /// Get username for logging/display purposes
+    pub fn username(&self) -> Option<&str> {
+        match self {
+            HmsAuthConfig::None => None,
+            HmsAuthConfig::Simple { username, .. } => Some(username),
+            HmsAuthConfig::Kerberos { principal, .. } => Some(principal),
+            HmsAuthConfig::DelegationToken { identifier, .. } => identifier.as_deref(),
+        }
+    }
+
+    /// Check if authentication is enabled
+    pub fn is_secure(&self) -> bool {
+        !matches!(self, HmsAuthConfig::None)
+    }
+
+    /// Check if Kerberos authentication is configured
+    pub fn is_kerberos(&self) -> bool {
+        matches!(self, HmsAuthConfig::Kerberos { .. })
     }
 }
 
@@ -274,6 +381,27 @@ fn default_username() -> String {
     "hive".to_string()
 }
 
+// Default value functions for Kerberos
+fn default_kerberos_service() -> String {
+    "hive".to_string()
+}
+
+fn default_mutual_auth() -> bool {
+    true
+}
+
+fn default_use_ccache() -> bool {
+    true
+}
+
+fn default_auto_renew() -> bool {
+    false
+}
+
+fn default_sasl_qop() -> SaslQop {
+    SaslQop::Auth
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,8 +411,41 @@ mod tests {
         let config = HmsConfig::default();
         assert_eq!(config.name, "hive");
         assert_eq!(config.uri, "thrift://localhost:9083");
-        assert_eq!(config.username, "hive");
-        assert!(config.password.is_none());
+
+        // Default auth is Simple with username "hive"
+        assert!(matches!(config.auth, HmsAuthConfig::Simple { .. }));
+        assert_eq!(config.auth.username(), Some("hive"));
+        assert!(config.auth.is_secure());
+        assert!(!config.auth.is_kerberos());
+    }
+
+    #[test]
+    fn test_kerberos_config() {
+        let auth = HmsAuthConfig::Kerberos {
+            principal: "hive/hostname@REALM".to_string(),
+            keytab: Some("/etc/security/keytabs/hive.keytab".to_string()),
+            realm: Some("REALM".to_string()),
+            service: "hive".to_string(),
+            service_hostname: None,
+            mutual_auth: true,
+            krb5_conf: None,
+            use_ccache: false,
+            ticket_lifetime: None,
+            auto_renew: false,
+            sasl_qop: SaslQop::Auth,
+        };
+
+        assert!(auth.is_kerberos());
+        assert!(auth.is_secure());
+        assert_eq!(auth.username(), Some("hive/hostname@REALM"));
+    }
+
+    #[test]
+    fn test_no_auth_config() {
+        let auth = HmsAuthConfig::None;
+        assert!(!auth.is_secure());
+        assert!(!auth.is_kerberos());
+        assert_eq!(auth.username(), None);
     }
 
     #[test]
