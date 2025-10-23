@@ -56,6 +56,15 @@ dashmap = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 
+# Kerberos/GSSAPI support (same library as hdfs-native)
+# Dynamic linking to system libgssapi_krb5
+libgssapi = { version = "0.7", optional = true }
+
+[features]
+default = []
+# Enable Kerberos authentication support
+kerberos = ["libgssapi"]
+
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"

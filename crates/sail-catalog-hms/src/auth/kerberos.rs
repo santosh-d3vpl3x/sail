@@ -2,11 +2,44 @@
 //!
 //! This module provides Kerberos/GSSAPI authentication support for HMS connections.
 //! It handles credential acquisition, renewal, and SASL negotiation.
+//!
+//! ## Implementation Approach
+//!
+//! This module uses the same `libgssapi` library as `hdfs-native` for Kerberos support.
+//! Enable with the `kerberos` feature flag:
+//!
+//! ```toml
+//! sail-catalog-hms = { version = "...", features = ["kerberos"] }
+//! ```
+//!
+//! ## System Requirements
+//!
+//! Requires system Kerberos libraries:
+//! - Linux: `krb5-workstation` or `krb5-user`
+//! - macOS: `brew install krb5`
+//! - Windows: MIT Kerberos for Windows
+//!
+//! ## References
+//!
+//! - hdfs-native implementation: Same approach for Kerberos
+//! - libgssapi docs: https://docs.rs/libgssapi
 
 use crate::config::{HmsAuthConfig, SaslQop};
 use crate::error::{HmsError, HmsResult};
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
+
+// Import libgssapi types when kerberos feature is enabled
+#[cfg(feature = "kerberos")]
+use libgssapi::context::{ClientCtx, CtxFlags, SecurityContext};
+#[cfg(feature = "kerberos")]
+use libgssapi::credential::{Cred, CredUsage};
+#[cfg(feature = "kerberos")]
+use libgssapi::name::Name;
+#[cfg(feature = "kerberos")]
+use libgssapi::oid::{OidSet, GSS_MECH_KRB5, GSS_NT_HOSTBASED_SERVICE};
+#[cfg(feature = "kerberos")]
+use libgssapi::util::Buf;
 
 /// Kerberos authenticator for HMS connections
 pub struct KerberosAuth {
@@ -114,24 +147,56 @@ impl KerberosAuth {
             )));
         }
 
-        // TODO: Implement actual keytab-based authentication
-        // This would typically use libkrb5 or a Rust wrapper like `libgssapi`
-        //
-        // Example steps:
-        // 1. krb5_init_context()
-        // 2. krb5_kt_resolve() - open keytab
-        // 3. krb5_parse_name() - parse principal
-        // 4. krb5_get_init_creds_keytab() - get initial credentials
-        // 5. krb5_cc_store_cred() - store in credential cache
+        #[cfg(feature = "kerberos")]
+        {
+            // WITH libgssapi (same as hdfs-native):
+            // Set keytab environment variable for GSSAPI
+            std::env::set_var("KRB5_CLIENT_KTNAME", keytab);
+            debug!("Set KRB5_CLIENT_KTNAME to {}", keytab.display());
 
-        warn!("Keytab authentication not yet fully implemented - Kerberos library integration needed");
+            // Create principal name for GSSAPI
+            let name = Name::new(
+                self.principal.as_bytes(),
+                Some(&GSS_NT_HOSTBASED_SERVICE),
+            )
+            .map_err(|e| HmsError::Internal(format!("Failed to create principal name: {}", e)))?;
 
-        Ok(KerberosCredentials {
-            principal: self.principal.clone(),
-            realm: self.realm.clone(),
-            service: self.service.clone(),
-            ticket_valid: true,
-        })
+            // Acquire credentials using keytab
+            let cred = Cred::acquire(
+                Some(&name),
+                None,  // No time limit
+                CredUsage::Initiate,
+                Some(&OidSet::from(GSS_MECH_KRB5)),
+            )
+            .map_err(|e| HmsError::Internal(format!("Failed to acquire credentials: {}", e)))?;
+
+            info!("Successfully acquired Kerberos credentials from keytab");
+
+            return Ok(KerberosCredentials {
+                #[cfg(feature = "kerberos")]
+                cred: Some(cred),
+                principal: self.principal.clone(),
+                realm: self.realm.clone(),
+                service: self.service.clone(),
+                ticket_valid: true,
+            });
+        }
+
+        #[cfg(not(feature = "kerberos"))]
+        {
+            // WITHOUT libgssapi - placeholder:
+            warn!("Keytab authentication requires 'kerberos' feature flag");
+            warn!("Enable with: cargo build --features kerberos");
+            warn!("Install system Kerberos: apt-get install krb5-user (Linux) or brew install krb5 (macOS)");
+
+            // Return placeholder credentials for API compatibility
+            Ok(KerberosCredentials {
+                principal: self.principal.clone(),
+                realm: self.realm.clone(),
+                service: self.service.clone(),
+                ticket_valid: false,  // Mark as invalid without real implementation
+            })
+        }
     }
 
     /// Acquire credentials from credential cache
@@ -186,8 +251,12 @@ impl KerberosAuth {
 }
 
 /// Kerberos credentials
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KerberosCredentials {
+    /// GSSAPI credential (when kerberos feature is enabled)
+    #[cfg(feature = "kerberos")]
+    cred: Option<Cred>,
+
     /// Principal name
     pub principal: String,
 
@@ -201,11 +270,31 @@ pub struct KerberosCredentials {
     pub ticket_valid: bool,
 }
 
+// Manual Debug implementation to avoid requiring Debug on Cred
+impl std::fmt::Debug for KerberosCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KerberosCredentials")
+            .field("principal", &self.principal)
+            .field("realm", &self.realm)
+            .field("service", &self.service)
+            .field("ticket_valid", &self.ticket_valid)
+            .finish()
+    }
+}
+
 impl KerberosCredentials {
     /// Check if credentials are still valid
     pub fn is_valid(&self) -> bool {
+        #[cfg(feature = "kerberos")]
+        {
+            // WITH libgssapi: Check actual credential lifetime
+            if let Some(ref cred) = self.cred {
+                return cred.lifetime().map(|l| l > 0).unwrap_or(false);
+            }
+        }
+
+        // Fallback: Use ticket_valid flag
         self.ticket_valid
-        // TODO: Also check ticket expiration time
     }
 
     /// Renew credentials
