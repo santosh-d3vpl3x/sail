@@ -5594,6 +5594,8 @@ dependencies = [
 name = "sail-data-source"
 version = "0.3.7"
 dependencies = [
+ "arrow",
+ "arrow-pyarrow",
  "async-trait",
  "bytes",
  "chrono",
@@ -5609,6 +5611,7 @@ dependencies = [
  "percent-encoding",
  "prettyplease",
  "proc-macro2",
+ "pyo3",
  "quote",
  "regex",
  "sail-common",

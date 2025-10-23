@@ -12,6 +12,7 @@ use crate::formats::console::ConsoleTableFormat;
 use crate::formats::csv::CsvTableFormat;
 use crate::formats::delta::DeltaTableFormat;
 use crate::formats::iceberg::IcebergDataSourceFormat;
+use crate::formats::jdbc::JdbcTableFormat;
 use crate::formats::json::JsonTableFormat;
 use crate::formats::parquet::ParquetTableFormat;
 use crate::formats::rate::RateTableFormat;
@@ -45,6 +46,7 @@ impl TableFormatRegistry {
         registry.register_format(Arc::new(DeltaTableFormat));
         registry.register_format(Arc::new(IcebergDataSourceFormat::default()));
         registry.register_format(Arc::new(JsonTableFormat::default()));
+        registry.register_format(Arc::new(JdbcTableFormat::default()));
         registry.register_format(Arc::new(ParquetTableFormat::default()));
         registry.register_format(Arc::new(TextTableFormat::default()));
         registry.register_format(Arc::new(SocketTableFormat));
