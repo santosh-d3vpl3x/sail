@@ -3,33 +3,39 @@
 This module provides JDBC database reading capabilities using high-performance
 backends (ConnectorX, ADBC) with Arrow-native data transfer.
 
-Usage:
+Usage (Native Spark API - Recommended):
     from pyspark.sql import SparkSession
-    from pysail.read import register_jdbc_reader
+    from pysail.read import install_jdbc_reader
 
     spark = SparkSession.builder.appName("myapp").getOrCreate()
 
-    # Register the JDBC reader (makes it available via spark.read.format("jdbc_sail"))
-    register_jdbc_reader(spark)
+    # Install JDBC reader (adds spark.read.jdbc() and spark.read.format("jdbc"))
+    install_jdbc_reader(spark)
 
-    # Read from database
+    # Now use standard Spark API!
+    df = spark.read.jdbc(
+        url="jdbc:postgresql://localhost:5432/mydb",
+        table="orders",
+        properties={"user": "admin", "password": "secret"}
+    )
+
+    # Or use DataSource V2 style
     df = spark.read \\
-        .format("jdbc_sail") \\
+        .format("jdbc") \\
         .option("url", "jdbc:postgresql://localhost:5432/mydb") \\
         .option("dbtable", "orders") \\
-        .option("user", "myuser") \\
-        .option("password", "mypass") \\
+        .option("user", "admin") \\
         .load()
 
-    # Or use the direct API
+Alternative Usage (Direct API):
     from pysail.read import read_jdbc
 
     df = read_jdbc(
         spark,
         url="jdbc:postgresql://localhost:5432/mydb",
         dbtable="orders",
-        user="myuser",
-        password="mypass",
+        user="admin",
+        password="secret",
         engine="connectorx"  # or "adbc" or "fallback"
     )
 """
@@ -40,6 +46,7 @@ from typing import Dict, Optional
 from pyspark.sql import SparkSession, DataFrame
 
 from .data_source import read_jdbc as _read_jdbc_impl
+from .spark_integration import install_jdbc_reader, jdbc as jdbc_reader
 from .exceptions import (
     JDBCReaderError,
     InvalidJDBCUrlError,
@@ -51,8 +58,11 @@ from .exceptions import (
 )
 
 __all__ = [
+    # Main API functions
     "read_jdbc",
-    "register_jdbc_reader",
+    "install_jdbc_reader",
+
+    # Exceptions
     "JDBCReaderError",
     "InvalidJDBCUrlError",
     "BackendNotAvailableError",
@@ -95,6 +105,9 @@ def read_jdbc(
 ) -> DataFrame:
     """
     Read from JDBC database using high-performance Arrow backends.
+
+    This is the direct API. For a more Spark-native experience, use
+    install_jdbc_reader() and then spark.read.jdbc().
 
     Args:
         spark: SparkSession
@@ -181,34 +194,17 @@ def read_jdbc(
     return _read_jdbc_impl(spark, options)
 
 
+# Deprecated: Use install_jdbc_reader() instead
 def register_jdbc_reader(spark: SparkSession) -> None:
     """
-    Register JDBC reader as a Spark data source format.
+    Register JDBC reader (deprecated).
 
-    This allows using spark.read.format("jdbc_sail").option(...).load()
-
-    Note: This is a placeholder. Full integration requires registering
-    a custom DataSource V2 provider, which may require Scala/Java code.
-
-    For now, users should use the read_jdbc() function directly.
+    Use install_jdbc_reader() instead for better integration.
 
     Args:
         spark: SparkSession
     """
     logger.warning(
-        "register_jdbc_reader() is not yet fully implemented. "
-        "Please use pysail.read.read_jdbc() directly for now."
+        "register_jdbc_reader() is deprecated. Use install_jdbc_reader() instead."
     )
-
-    # TODO: Implement custom DataSource V2 registration
-    # This would require:
-    # 1. Creating a DataSourceRegister in Scala/Java
-    # 2. Registering it with Spark's DataSource registry
-    # 3. Or using Python UDF-based approach (less efficient)
-
-    # For now, we just log a warning
-    logger.info(
-        "To use JDBC reader, call: "
-        "from pysail.read import read_jdbc; "
-        "df = read_jdbc(spark, url='...', dbtable='...')"
-    )
+    install_jdbc_reader(spark)
