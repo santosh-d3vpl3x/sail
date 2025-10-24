@@ -2,6 +2,8 @@
 # We have a CI step that verifies this.
 # We cannot use the Hatch dynamic version feature since the project
 # may be built with Maturin outside of Hatch.
+from . import read
+
 __version__: str = "0.3.7"
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "read"]

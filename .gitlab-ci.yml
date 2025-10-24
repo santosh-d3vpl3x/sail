@@ -1,0 +1,32 @@
+stages:
+  - test
+
+postgres-jdbc-integration:
+  stage: test
+  image: python:3.11
+  services:
+    postgres:
+      image: postgres:15
+      env:
+        POSTGRES_USER: my_weather_app
+        POSTGRES_PASSWORD: my_password
+      options: >-
+        --health-cmd pg_isready
+        --health-interval 10s
+        --health-timeout 5s
+        --health-retries 5
+      ports:
+        - 5432:5432
+  variables:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+    LAKESAIL_TEST_PG_HOST: "postgres"
+    LAKESAIL_TEST_PG_PORT: "5432"
+    LAKESAIL_TEST_PG_DATABASE: "my_weather_app"
+    LAKESAIL_TEST_PG_USER: "my_weather_app"
+    LAKESAIL_TEST_PG_PASSWORD: "my_password"
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install ".[test,db]" psycopg2-binary
+  script:
+    - pytest python/pysail/tests/db/test_jdbc_integration.py -q -k postgres

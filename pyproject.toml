@@ -42,6 +42,12 @@ test = [
 mcp = [
     "mcp>=1.0.0,<2",
 ]
+db = [
+    "pyarrow>=15.0,<19",
+    "connectorx>=0.4.0,<0.5",
+    "adbc-driver-postgresql>=0.11,<0.12",
+    "adbc-driver-sqlite>=0.11,<0.12",
+]
 
 [project.urls]
 Homepage = "https://lakesail.com"
