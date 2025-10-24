@@ -18,12 +18,7 @@ high-performance Arrow backends (ConnectorX, ADBC).
 import logging
 from typing import Optional, Dict, Any
 
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.readwriter import DataFrameReader
-
-from .data_source import read_jdbc as _read_jdbc_impl
-from .exceptions import InvalidOptionsError
-
+# Lazy imports to avoid PySpark dependency at module level
 logger = logging.getLogger("lakesail.jdbc")
 
 
@@ -35,12 +30,12 @@ class JDBCDataFrameReader:
     the standard Spark spark.read.jdbc() interface.
     """
 
-    def __init__(self, spark: SparkSession):
+    def __init__(self, spark):
         """
         Initialize JDBC reader.
 
         Args:
-            spark: SparkSession instance
+            spark: SparkSession instance (no type hint to avoid PySpark import)
         """
         self.spark = spark
         self._options: Dict[str, str] = {}
@@ -78,7 +73,7 @@ class JDBCDataFrameReader:
         url: Optional[str] = None,
         table: Optional[str] = None,
         **kwargs
-    ) -> DataFrame:
+    ):
         """
         Load data from JDBC source.
 
@@ -96,6 +91,10 @@ class JDBCDataFrameReader:
                 .option("dbtable", "orders") \\
                 .load()
         """
+        # Lazy import to use new architecture
+        from .spark_adapter import to_spark_dataframe
+        from .arrow_datasource import JDBCArrowDataSource
+
         # Merge arguments into options
         if url:
             self._options["url"] = url
@@ -104,8 +103,9 @@ class JDBCDataFrameReader:
 
         self._options.update(kwargs)
 
-        # Delegate to our implementation
-        return _read_jdbc_impl(self.spark, self._options)
+        # Use new architecture: datasource + adapter
+        datasource = JDBCArrowDataSource()
+        return to_spark_dataframe(self.spark, datasource, self._options)
 
 
 def jdbc(
@@ -118,7 +118,7 @@ def jdbc(
     numPartitions: Optional[int] = None,
     predicates: Optional[list] = None,
     properties: Optional[dict] = None,
-) -> DataFrame:
+):
     """
     Read from JDBC database using standard Spark API.
 
@@ -166,6 +166,11 @@ def jdbc(
             properties={"user": "admin"}
         )
     """
+    # Lazy import PySpark types and new architecture
+    from pyspark.sql.readwriter import DataFrameReader
+    from .spark_adapter import to_spark_dataframe
+    from .arrow_datasource import JDBCArrowDataSource
+
     # Extract SparkSession from DataFrameReader if needed
     if isinstance(spark_or_reader, DataFrameReader):
         spark = spark_or_reader._spark  # noqa: SLF001
@@ -197,11 +202,12 @@ def jdbc(
         for key, value in properties.items():
             options[key] = str(value)
 
-    # Delegate to our implementation
-    return _read_jdbc_impl(spark, options)
+    # Use new architecture: datasource + adapter
+    datasource = JDBCArrowDataSource()
+    return to_spark_dataframe(spark, datasource, options)
 
 
-def install_jdbc_reader(spark: SparkSession) -> None:
+def install_jdbc_reader(spark) -> None:
     """
     Install JDBC reader into Spark session.
 
@@ -210,7 +216,7 @@ def install_jdbc_reader(spark: SparkSession) -> None:
     - spark.read.format("jdbc") support
 
     Args:
-        spark: SparkSession to augment
+        spark: SparkSession to augment (no type hint to avoid PySpark import)
 
     Example:
         from pysail.read import install_jdbc_reader
@@ -224,6 +230,9 @@ def install_jdbc_reader(spark: SparkSession) -> None:
             table="orders"
         )
     """
+    # Lazy import PySpark types
+    from pyspark.sql.readwriter import DataFrameReader
+
     # Monkey-patch DataFrameReader to add jdbc() method
     original_format = DataFrameReader.format
 
@@ -253,7 +262,7 @@ def install_jdbc_reader(spark: SparkSession) -> None:
         numPartitions: Optional[int] = None,
         predicates: Optional[list] = None,
         properties: Optional[dict] = None,
-    ) -> DataFrame:
+    ):
         """JDBC reader method for DataFrameReader."""
         return jdbc(
             self,
@@ -276,6 +285,10 @@ def install_jdbc_reader(spark: SparkSession) -> None:
 def _auto_install():
     """Auto-install JDBC reader when module is imported."""
     try:
+        # Lazy import
+        from pyspark.sql import SparkSession
+        from pyspark.sql.readwriter import DataFrameReader
+
         # Try to get active SparkSession
         spark = SparkSession.getActiveSession()
         if spark and not hasattr(DataFrameReader, '_jdbc_installed'):

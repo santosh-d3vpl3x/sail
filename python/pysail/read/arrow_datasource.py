@@ -310,15 +310,52 @@ class JDBCArrowDataSource(ArrowBatchDataSource):
 
     def infer_schema(self, options: Dict[str, str]) -> pa.Schema:
         """Infer Arrow schema from JDBC source."""
-        from .data_source import infer_arrow_schema
         from .jdbc_options import NormalizedJDBCOptions
+        from .jdbc_url_parser import parse_jdbc_url, validate_driver_supported
+        from .query_builder import build_schema_inference_query
+        from .backends import get_backend
+        from .exceptions import SchemaInferenceError, DatabaseError
+        from .utils import mask_credentials
 
         # Normalize options
         normalized_opts = NormalizedJDBCOptions.from_spark_options(options)
         normalized_opts.validate()
 
-        # Infer schema using existing implementation
-        return infer_arrow_schema(normalized_opts)
+        # Get backend
+        backend = get_backend(normalized_opts.engine)
+
+        # Parse JDBC URL
+        parsed = parse_jdbc_url(normalized_opts.url, normalized_opts.user, normalized_opts.password)
+        validate_driver_supported(parsed.driver)
+
+        # Build LIMIT 1 query
+        limit_query = build_schema_inference_query(
+            dbtable=normalized_opts.dbtable,
+            query=normalized_opts.query
+        )
+
+        logger.info(f"Inferring schema from {mask_credentials(parsed.connection_string)}")
+        logger.debug(f"Schema inference query: {limit_query}")
+
+        try:
+            # Fetch single batch
+            batches = backend.read_batches(
+                connection_string=parsed.connection_string,
+                query=limit_query,
+                fetch_size=1
+            )
+
+            if not batches or len(batches) == 0:
+                raise SchemaInferenceError("Query returned no results for schema inference")
+
+            # Return Arrow schema directly (preserve types from database)
+            schema = batches[0].schema
+            logger.info(f"Inferred schema with {len(schema)} columns: {schema.names}")
+
+            return schema
+
+        except DatabaseError as e:
+            raise SchemaInferenceError(f"Failed to infer schema: {e}") from e
 
     def plan_partitions(self, options: Dict[str, str]) -> List[Dict[str, Any]]:
         """Plan JDBC partitions."""
