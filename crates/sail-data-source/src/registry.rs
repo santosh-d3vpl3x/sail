@@ -12,9 +12,10 @@ use crate::formats::console::ConsoleTableFormat;
 use crate::formats::csv::CsvTableFormat;
 use crate::formats::delta::DeltaTableFormat;
 use crate::formats::iceberg::IcebergDataSourceFormat;
-use crate::formats::jdbc::JDBCFormat;
+use crate::formats::jdbc::JDBCFormat;  // DEPRECATED: kept for backward compatibility
 use crate::formats::json::JsonTableFormat;
 use crate::formats::parquet::ParquetTableFormat;
+use crate::formats::python::PythonDataSourceFormat;
 use crate::formats::rate::RateTableFormat;
 use crate::formats::socket::SocketTableFormat;
 use crate::formats::text::TextTableFormat;
@@ -45,9 +46,10 @@ impl TableFormatRegistry {
         registry.register_format(Arc::new(CsvTableFormat::default()));
         registry.register_format(Arc::new(DeltaTableFormat));
         registry.register_format(Arc::new(IcebergDataSourceFormat::default()));
-        registry.register_format(Arc::new(JDBCFormat));
+        registry.register_format(Arc::new(JDBCFormat));  // DEPRECATED: kept for backward compatibility
         registry.register_format(Arc::new(JsonTableFormat::default()));
         registry.register_format(Arc::new(ParquetTableFormat::default()));
+        registry.register_format(Arc::new(PythonDataSourceFormat::default()));
         registry.register_format(Arc::new(TextTableFormat::default()));
         registry.register_format(Arc::new(SocketTableFormat));
         registry.register_format(Arc::new(RateTableFormat));

@@ -9,8 +9,8 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
+use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
-use arrow_array::RecordBatch;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::common::{Result as DFResult, Statistics};
 use datafusion::physical_plan::{

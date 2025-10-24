@@ -1,5 +1,5 @@
 [package]
-name = "sail-jdbc"
+name = "sail-python-datasource"
 version = { workspace = true }
 edition = { workspace = true }
 
@@ -15,6 +15,10 @@ datafusion-physical-expr = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 
+# Python bridge
+pyo3 = { workspace = true, features = ["auto-initialize"] }
+pythonize = { workspace = true }
+
 # Essential utilities
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -22,11 +26,6 @@ tokio = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-url = { workspace = true }
-
-# JDBC connectivity via Python bridge (for now)
-# TODO: Replace with native Rust JDBC libraries when available
-pyo3 = { workspace = true, features = ["auto-initialize"] }
 
 [lints]
 workspace = true

@@ -11,7 +11,8 @@ sail-common = { path = "../sail-common" }
 sail-common-datafusion = { path = "../sail-common-datafusion" }
 sail-delta-lake = { path = "../sail-delta-lake" }
 sail-iceberg = { path = "../sail-iceberg" }
-sail-jdbc = { path = "../sail-jdbc" }
+sail-jdbc = { path = "../sail-jdbc" }  # DEPRECATED: use sail-python-datasource instead
+sail-python-datasource = { path = "../sail-python-datasource" }
 
 async-trait = { workspace = true }
 serde = { workspace = true }
