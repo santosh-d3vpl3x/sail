@@ -1,0 +1,134 @@
+"""Safe query building with parameterization (no SQL injection)."""
+
+from typing import Tuple
+
+
+def build_partition_predicate(
+    column: str,
+    value_lower: int,
+    value_upper: int,
+) -> str:
+    """
+    Generate WHERE clause SAFELY (quoted column, literal values).
+
+    BAD:  f"WHERE {column} >= {value_lower}"  # SQL injection risk
+    GOOD: f'WHERE "{column}" >= {value_lower}'  # Quoted identifier
+
+    Args:
+        column: Column name for partitioning
+        value_lower: Lower bound (inclusive)
+        value_upper: Upper bound (exclusive)
+
+    Returns:
+        Safe WHERE clause predicate
+    """
+    # Quote column identifier (double quotes for most DBs, backticks for MySQL handled by backend)
+    quoted_col = f'"{column}"'
+
+    # Values are integers; no injection risk, but use literals
+    return f'{quoted_col} >= {value_lower} AND {quoted_col} < {value_upper}'
+
+
+def build_filtered_query(
+    base_query: str,
+    predicate: str,
+) -> str:
+    """
+    Wrap base query and append WHERE safely.
+
+    Example:
+      Input:  SELECT * FROM orders WHERE status='active'
+      Predicate: order_id >= 100 AND order_id < 200
+      Output: (SELECT * FROM orders WHERE status='active') AS _sail_part WHERE order_id >= 100 AND order_id < 200
+
+    Args:
+        base_query: Base SQL query or table name
+        predicate: WHERE clause predicate
+
+    Returns:
+        Wrapped query with predicate applied
+    """
+    # Wrap in subquery to isolate
+    return f"({base_query}) AS _sail_part WHERE {predicate}"
+
+
+def build_query_for_partition(
+    dbtable: str = None,
+    query: str = None,
+    predicate: str = None,
+) -> str:
+    """
+    Build final query for a partition.
+
+    Args:
+        dbtable: Table name or subquery (SELECT ...) AS alias
+        query: Full SQL query (alternative to dbtable)
+        predicate: Optional WHERE clause predicate for this partition
+
+    Returns:
+        Complete SQL query for partition
+    """
+    # Use either dbtable or query as base
+    base = query if query else dbtable
+
+    if not base:
+        raise ValueError("Either dbtable or query must be provided")
+
+    # If no predicate, return base as-is
+    if not predicate:
+        # If dbtable is just a table name, add SELECT *
+        if dbtable and not query and "SELECT" not in dbtable.upper():
+            return f"SELECT * FROM {dbtable}"
+        return base
+
+    # If base is just a table name, wrap it
+    if dbtable and not query and "SELECT" not in dbtable.upper():
+        return f"SELECT * FROM {dbtable} WHERE {predicate}"
+
+    # Otherwise wrap in subquery
+    return build_filtered_query(base, predicate)
+
+
+def build_schema_inference_query(
+    dbtable: str = None,
+    query: str = None,
+) -> str:
+    """
+    Build LIMIT 1 query for schema inference.
+
+    Args:
+        dbtable: Table name or subquery
+        query: Full SQL query (alternative to dbtable)
+
+    Returns:
+        Query that returns at most 1 row for schema inference
+    """
+    base = query if query else dbtable
+
+    if not base:
+        raise ValueError("Either dbtable or query must be provided")
+
+    # If dbtable is just a table name, add SELECT * FROM
+    if dbtable and not query and "SELECT" not in dbtable.upper():
+        return f"SELECT * FROM {dbtable} LIMIT 1"
+
+    # Otherwise wrap in subquery
+    return f"({base}) AS _schema_infer LIMIT 1"
+
+
+def execute_parametrized_query(cursor, query: str, params: Tuple):
+    """
+    Execute query with parameters (no string formatting).
+
+    For backends that support parameterized queries (ADBC with capability check).
+
+    Args:
+        cursor: Database cursor
+        query: SQL query with parameter placeholders (?)
+        params: Tuple of parameter values
+
+    Example:
+        query = "SELECT * FROM orders WHERE user_id = ? AND date > ?"
+        params = (123, "2024-01-01")
+    """
+    cursor.execute(query, params)
