@@ -1,77 +1,70 @@
 """
-ArrowBatchDataSource - Base class for Arrow-native Spark data sources.
+ArrowBatchDataSource - Lakesail's framework-agnostic data source abstraction.
 
-This module provides a foundation for creating custom Spark data sources that:
-- Return Arrow RecordBatches natively (zero-copy when possible)
-- Support distributed reading via partitioning
-- Integrate with Spark's native spark.read.format() API
-- Provide an extensible base for multiple Arrow-backed data sources
+This module provides a pure Python abstraction for Arrow-native data sources.
+It has NO dependencies on any specific framework (PySpark, Polars, etc.).
+
+The abstraction can be used to:
+- Implement various data sources (JDBC, REST APIs, S3, etc.)
+- Integrate with multiple frameworks via adapters
+- Use Arrow data directly without framework overhead
 
 Architecture:
-    User Code
-        ↓
-    spark.read.format("jdbc").option(...).load()
-        ↓
-    JDBCArrowDataSource (extends ArrowBatchDataSource)
-        ↓
-    ArrowBatchReader (partition-aware)
-        ↓
-    Backend (ConnectorX/ADBC/Fallback)
-        ↓
-    Arrow RecordBatches → Spark DataFrame
 
-Design Goals:
-1. Native Spark API integration (no custom functions)
-2. Arrow-first data exchange (no row-wise conversion)
-3. Distributed execution (partition-aware reading)
-4. Extensible base for other Arrow data sources (JDBC, REST APIs, etc.)
-5. Type preservation from source to Spark
+    Pure Python Layer (this module):
+    ┌─────────────────────────────────────┐
+    │  ArrowBatchDataSource (abstract)    │
+    │  - infer_schema() → Arrow Schema    │
+    │  - plan_partitions() → Specs        │
+    │  - read_partition() → RecordBatches │
+    └─────────────────────────────────────┘
+                    ▲
+                    │ extends
+                    │
+    ┌─────────────────────────────────────┐
+    │  JDBCArrowDataSource                │
+    │  PostgreSQLDataSource               │
+    │  RESTApiDataSource                  │
+    │  ... (any data source)              │
+    └─────────────────────────────────────┘
 
-Usage:
-    from pyspark.sql import SparkSession
-    from pysail.read import install_jdbc_reader
+    Framework Adapters (separate modules):
+    ┌─────────────────────────────────────┐
+    │  SparkArrowAdapter                  │
+    │  PolarsArrowAdapter                 │
+    │  DuckDBArrowAdapter                 │
+    │  ... (any framework)                │
+    └─────────────────────────────────────┘
 
-    spark = SparkSession.builder.getOrCreate()
+Example - Pure Arrow usage (no framework):
+    from pysail.read.arrow_datasource import JDBCArrowDataSource
 
-    # Install the JDBC reader
-    install_jdbc_reader(spark)
+    datasource = JDBCArrowDataSource()
+    options = {"url": "jdbc:postgresql://...", "dbtable": "orders"}
 
-    # Standard Spark API - works out of the box!
-    df = spark.read.jdbc(
-        url="jdbc:postgresql://localhost:5432/mydb",
-        table="orders",
-        properties={"user": "admin", "password": "secret"}
-    )
+    # Get Arrow schema
+    schema = datasource.infer_schema(options)
 
-    # Or DataSource V2 style
-    df = spark.read \\
-        .format("jdbc") \\
-        .option("url", "jdbc:postgresql://localhost:5432/mydb") \\
-        .option("dbtable", "orders") \\
-        .load()
+    # Get partition specs
+    partitions = datasource.plan_partitions(options)
 
-Extending ArrowBatchDataSource:
-    To create a new Arrow-backed data source:
+    # Read data as Arrow batches
+    for partition_spec in partitions:
+        for batch in datasource.read_partition(partition_spec, options):
+            # Work with Arrow RecordBatch directly
+            print(batch.to_pandas())
 
-    1. Subclass ArrowBatchDataSource
-    2. Implement infer_schema() to return Arrow schema
-    3. Implement plan_partitions() to generate partition specs
-    4. Implement read_partition() to read Arrow batches per partition
-    5. Register with install_datasource(spark, format_name)
+Example - With Spark (via adapter):
+    from pysail.read.spark_adapter import to_spark_dataframe
 
-    Example:
-        class MyArrowDataSource(ArrowBatchDataSource):
-            def infer_schema(self, options):
-                # Return pyarrow.Schema
-                pass
+    datasource = JDBCArrowDataSource()
+    df = to_spark_dataframe(spark, datasource, options)
 
-            def plan_partitions(self, options):
-                # Return list of partition specs (dicts)
-                pass
+Example - With Polars (via adapter):
+    from pysail.read.polars_adapter import to_polars_dataframe
 
-            def read_partition(self, partition_spec, options):
-                # Yield pyarrow.RecordBatch objects
-                pass
+    datasource = JDBCArrowDataSource()
+    df = to_polars_dataframe(datasource, options)
 """
 
 from abc import ABC, abstractmethod
@@ -79,25 +72,44 @@ from typing import Dict, List, Iterator, Any
 import logging
 
 import pyarrow as pa
-from pyspark.sql import SparkSession, DataFrame
 
 logger = logging.getLogger("lakesail.arrow_datasource")
 
 
 class ArrowBatchDataSource(ABC):
     """
-    Abstract base class for Arrow-native Spark data sources.
+    Abstract base class for Arrow-native data sources.
 
-    This class provides the foundation for creating data sources that:
-    - Read data as Arrow RecordBatches
-    - Support distributed reading via partitioning
-    - Preserve data types without conversion
-    - Integrate seamlessly with Spark
+    This is a pure abstraction with NO framework dependencies.
+    Data sources implement this interface, then framework adapters
+    can convert the Arrow data to framework-specific formats.
 
-    Subclasses must implement:
-    - infer_schema(): Return Arrow schema for the data
-    - plan_partitions(): Return list of partition specifications
-    - read_partition(): Read Arrow batches for a single partition
+    Implementing a new data source:
+        1. Subclass ArrowBatchDataSource
+        2. Implement infer_schema() to return Arrow schema
+        3. Implement plan_partitions() to generate partition specs
+        4. Implement read_partition() to read Arrow batches
+
+    Example:
+        class MyDataSource(ArrowBatchDataSource):
+            def infer_schema(self, options):
+                # Return pyarrow.Schema
+                return pa.schema([
+                    ('id', pa.int64()),
+                    ('name', pa.string())
+                ])
+
+            def plan_partitions(self, options):
+                # Return partition specs
+                return [
+                    {'partition_id': 0, 'range': '0-100'},
+                    {'partition_id': 1, 'range': '100-200'},
+                ]
+
+            def read_partition(self, partition_spec, options):
+                # Read and yield Arrow batches
+                data = self.fetch_data(partition_spec['range'])
+                yield pa.RecordBatch.from_pandas(data)
     """
 
     @abstractmethod
@@ -105,27 +117,35 @@ class ArrowBatchDataSource(ABC):
         """
         Infer Arrow schema from data source.
 
-        This is called once before reading to determine the schema.
+        This is called to determine the schema before reading data.
+        Should be fast (e.g., read only first row or use metadata).
 
         Args:
             options: Dictionary of data source options
 
         Returns:
-            pyarrow.Schema for the data
+            pyarrow.Schema describing the data
 
         Raises:
             Exception: If schema cannot be inferred
+
+        Example:
+            schema = datasource.infer_schema({
+                'url': 'jdbc:postgresql://localhost/db',
+                'dbtable': 'orders'
+            })
+            # schema: pa.schema([('id', pa.int64()), ...])
         """
         pass
 
     @abstractmethod
     def plan_partitions(self, options: Dict[str, str]) -> List[Dict[str, Any]]:
         """
-        Plan partitions for distributed reading.
+        Plan partitions for distributed/parallel reading.
 
-        Each partition spec is a dictionary that will be passed to
-        read_partition(). The specs can contain any information needed
-        to read that partition (e.g., ID ranges, file paths, predicates).
+        Each partition spec is a dictionary containing information
+        needed to read that partition. The specs are serializable
+        (JSON-compatible types only: str, int, float, bool, list, dict).
 
         Args:
             options: Dictionary of data source options
@@ -133,21 +153,29 @@ class ArrowBatchDataSource(ABC):
         Returns:
             List of partition specifications (dicts)
 
-        Examples:
+        Example partition specs:
             # Range-based partitioning
-            return [
-                {"partition_id": 0, "lower": 0, "upper": 100},
-                {"partition_id": 1, "lower": 100, "upper": 200},
+            [
+                {'partition_id': 0, 'lower': 0, 'upper': 100},
+                {'partition_id': 1, 'lower': 100, 'upper': 200},
             ]
 
             # Predicate-based partitioning
-            return [
-                {"partition_id": 0, "predicate": "status='active'"},
-                {"partition_id": 1, "predicate": "status='pending'"},
+            [
+                {'partition_id': 0, 'filter': "status='active'"},
+                {'partition_id': 1, 'filter': "status='pending'"},
             ]
 
-            # Single partition
-            return [{"partition_id": 0}]
+            # File-based partitioning
+            [
+                {'partition_id': 0, 'file': 's3://bucket/data/part-0.parquet'},
+                {'partition_id': 1, 'file': 's3://bucket/data/part-1.parquet'},
+            ]
+
+            # Single partition (no parallelism)
+            [
+                {'partition_id': 0}
+            ]
         """
         pass
 
@@ -160,7 +188,8 @@ class ArrowBatchDataSource(ABC):
         """
         Read Arrow batches for a single partition.
 
-        This is called on each executor to read data for one partition.
+        This method will be called (potentially in parallel) for each
+        partition spec returned by plan_partitions().
 
         Args:
             partition_spec: Partition specification from plan_partitions()
@@ -173,110 +202,110 @@ class ArrowBatchDataSource(ABC):
             Exception: If read fails
 
         Example:
-            def read_partition(self, partition_spec, options):
-                # Extract partition info
-                lower = partition_spec.get("lower", 0)
-                upper = partition_spec.get("upper", 1000)
-
-                # Read data (using your backend)
-                data = self.backend.read_range(lower, upper)
-
-                # Convert to Arrow batches
-                for batch in data.to_batches():
-                    yield batch
+            for batch in datasource.read_partition(
+                {'partition_id': 0, 'lower': 0, 'upper': 100},
+                {'url': '...', 'dbtable': '...'}
+            ):
+                # batch is pa.RecordBatch
+                print(f"Read {batch.num_rows} rows")
         """
         pass
 
-    def to_dataframe(
-        self,
-        spark: SparkSession,
-        options: Dict[str, str]
-    ) -> DataFrame:
+    def read_all(self, options: Dict[str, str]) -> Iterator[pa.RecordBatch]:
         """
-        Convert this data source to a Spark DataFrame.
+        Convenience method to read all partitions sequentially.
 
-        This method orchestrates the entire reading process:
-        1. Infer schema
-        2. Plan partitions
-        3. Distribute read_partition() across executors
-        4. Combine results into DataFrame
+        This is useful for:
+        - Testing
+        - Small datasets
+        - Single-threaded processing
+        - Direct Arrow usage without framework
 
         Args:
-            spark: SparkSession
+            options: Dictionary of data source options
+
+        Yields:
+            pyarrow.RecordBatch objects from all partitions
+
+        Example:
+            datasource = MyDataSource()
+            for batch in datasource.read_all({'url': '...', 'dbtable': '...'}):
+                df_pandas = batch.to_pandas()
+                print(df_pandas)
+        """
+        partitions = self.plan_partitions(options)
+        for partition_spec in partitions:
+            for batch in self.read_partition(partition_spec, options):
+                yield batch
+
+    def to_arrow_table(self, options: Dict[str, str]) -> pa.Table:
+        """
+        Read all data as a single Arrow Table.
+
+        Convenience method for small datasets or testing.
+
+        Args:
             options: Dictionary of data source options
 
         Returns:
-            Spark DataFrame
+            pyarrow.Table with all data
 
-        Raises:
-            Exception: If reading fails
+        Warning:
+            This materializes all data in memory. For large datasets,
+            use read_all() or a framework adapter instead.
+
+        Example:
+            datasource = MyDataSource()
+            table = datasource.to_arrow_table({'url': '...', 'dbtable': '...'})
+            print(table.to_pandas())
         """
-        from .data_source import (
-            _arrow_schema_to_spark_schema,
-            _arrow_type_to_spark_type
-        )
-
-        # Infer schema
-        arrow_schema = self.infer_schema(options)
-        spark_schema = _arrow_schema_to_spark_schema(arrow_schema)
-
-        # Plan partitions
-        partitions = self.plan_partitions(options)
-
-        logger.info(f"Reading from {self.__class__.__name__} with {len(partitions)} partition(s)")
-
-        # Broadcast options and partition specs to executors
-        broadcast_options = spark.sparkContext.broadcast(options)
-        broadcast_self = spark.sparkContext.broadcast(self)
-
-        def partition_reader(partition_iter: Iterator[int]) -> Iterator[pa.RecordBatch]:
-            """Read partitions on executors."""
-            for partition_idx in partition_iter:
-                opts = broadcast_options.value
-                datasource = broadcast_self.value
-                partition_spec = partitions[partition_idx]
-
-                # Read partition as Arrow batches
-                for batch in datasource.read_partition(partition_spec, opts):
-                    yield batch
-
-        # Create RDD of partition indices
-        rdd = spark.sparkContext.parallelize(
-            range(len(partitions)), numSlices=len(partitions)
-        )
-
-        # Map each partition to read Arrow batches
-        arrow_rdd = rdd.mapPartitions(partition_reader)
-
-        # Convert Arrow batches to Spark rows
-        from pyspark.sql import Row
-
-        def batches_to_rows(batch_iter: Iterator[pa.RecordBatch]) -> Iterator[Row]:
-            """Convert Arrow batches to Spark Rows."""
-            for batch in batch_iter:
-                # Convert batch to pandas (efficient)
-                df_pandas = batch.to_pandas()
-
-                # Convert pandas rows to Spark Rows
-                for row_dict in df_pandas.to_dict('records'):
-                    yield Row(**row_dict)
-
-        row_rdd = arrow_rdd.mapPartitions(batches_to_rows)
-
-        # Create DataFrame
-        df = spark.createDataFrame(row_rdd, schema=spark_schema)
-
-        logger.info(f"Successfully created DataFrame from {self.__class__.__name__}")
-
-        return df
+        batches = list(self.read_all(options))
+        if not batches:
+            # Empty result - return empty table with schema
+            schema = self.infer_schema(options)
+            return pa.Table.from_batches([], schema=schema)
+        return pa.Table.from_batches(batches)
 
 
 class JDBCArrowDataSource(ArrowBatchDataSource):
     """
-    JDBC data source implementation using ArrowBatchDataSource.
+    JDBC data source implementation.
 
-    This class wraps the existing JDBC backend infrastructure to work
-    with the ArrowBatchDataSource interface.
+    This implementation is pure Python with no Spark dependencies.
+    It uses the existing JDBC backend infrastructure.
+
+    Example usage without any framework:
+        datasource = JDBCArrowDataSource()
+        options = {
+            'url': 'jdbc:postgresql://localhost:5432/mydb',
+            'dbtable': 'orders',
+            'user': 'admin',
+            'password': 'secret'
+        }
+
+        # Get schema
+        schema = datasource.infer_schema(options)
+        print(schema)
+
+        # Read all data as Arrow Table
+        table = datasource.to_arrow_table(options)
+        print(table.to_pandas())
+
+    Example with partitioning:
+        options = {
+            'url': 'jdbc:postgresql://localhost:5432/mydb',
+            'dbtable': 'orders',
+            'partitionColumn': 'order_id',
+            'lowerBound': '1',
+            'upperBound': '1000',
+            'numPartitions': '4'
+        }
+
+        # Process partitions in parallel (using any parallel framework)
+        partitions = datasource.plan_partitions(options)
+        for partition_spec in partitions:
+            for batch in datasource.read_partition(partition_spec, options):
+                process(batch)
     """
 
     def infer_schema(self, options: Dict[str, str]) -> pa.Schema:
@@ -311,7 +340,7 @@ class JDBCArrowDataSource(ArrowBatchDataSource):
 
         predicates = planner.generate_predicates()
 
-        # Convert to partition specs
+        # Convert to partition specs (JSON-serializable)
         return [
             {
                 "partition_id": i,

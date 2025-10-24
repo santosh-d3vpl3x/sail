@@ -1,52 +1,74 @@
-"""Lakesail JDBC Reader - Python-based database reading with Arrow backends.
+"""Lakesail JDBC Reader - Framework-agnostic database reading with Arrow.
 
-This module provides JDBC database reading capabilities using high-performance
-backends (ConnectorX, ADBC) with Arrow-native data transfer.
+This module provides database reading capabilities with NO framework dependencies
+in the core. Framework integration (Spark, Polars, etc.) is via separate adapters.
 
-Usage (Native Spark API - Recommended):
+Core Layer (NO framework dependencies):
+    ├── ArrowBatchDataSource (pure abstraction)
+    ├── JDBCArrowDataSource (JDBC implementation)
+    ├── Backends (ConnectorX, ADBC, fallback)
+    └── Utilities (URL parsing, options, partitioning)
+
+Adapter Layer (framework-specific):
+    ├── spark_adapter → Spark DataFrame
+    ├── polars_adapter → Polars DataFrame (future)
+    └── duckdb_adapter → DuckDB (future)
+
+Usage - Pure Arrow (NO framework required):
+    from pysail.read.arrow_datasource import JDBCArrowDataSource
+
+    datasource = JDBCArrowDataSource()
+    options = {
+        'url': 'jdbc:postgresql://localhost:5432/mydb',
+        'dbtable': 'orders',
+        'user': 'admin',
+        'password': 'secret'
+    }
+
+    # Get Arrow Table
+    table = datasource.to_arrow_table(options)
+    print(table.to_pandas())
+
+Usage - With Spark:
     from pyspark.sql import SparkSession
-    from pysail.read import install_jdbc_reader
+    from pysail.read import read_jdbc  # or use_arrow_datasource
 
-    spark = SparkSession.builder.appName("myapp").getOrCreate()
+    spark = SparkSession.builder.getOrCreate()
 
-    # Install JDBC reader (adds spark.read.jdbc() and spark.read.format("jdbc"))
-    install_jdbc_reader(spark)
-
-    # Now use standard Spark API!
-    df = spark.read.jdbc(
-        url="jdbc:postgresql://localhost:5432/mydb",
-        table="orders",
-        properties={"user": "admin", "password": "secret"}
-    )
-
-    # Or use DataSource V2 style
-    df = spark.read \\
-        .format("jdbc") \\
-        .option("url", "jdbc:postgresql://localhost:5432/mydb") \\
-        .option("dbtable", "orders") \\
-        .option("user", "admin") \\
-        .load()
-
-Alternative Usage (Direct API):
-    from pysail.read import read_jdbc
-
+    # Option 1: Convenience function
     df = read_jdbc(
         spark,
-        url="jdbc:postgresql://localhost:5432/mydb",
-        dbtable="orders",
-        user="admin",
-        password="secret",
-        engine="connectorx"  # or "adbc" or "fallback"
+        url='jdbc:postgresql://localhost:5432/mydb',
+        dbtable='orders',
+        user='admin',
+        password='secret'
+    )
+
+    # Option 2: Direct adapter usage
+    from pysail.read.arrow_datasource import JDBCArrowDataSource
+    from pysail.read.spark_adapter import to_spark_dataframe
+
+    datasource = JDBCArrowDataSource()
+    df = to_spark_dataframe(spark, datasource, options)
+
+Usage - With Spark Native API:
+    from pysail.read import install_jdbc_reader
+
+    install_jdbc_reader(spark)
+
+    # Now use standard Spark API (as convenience wrapper)
+    df = spark.read.jdbc(
+        url='jdbc:postgresql://localhost:5432/mydb',
+        table='orders',
+        properties={'user': 'admin', 'password': 'secret'}
     )
 """
 
 import logging
 from typing import Dict, Optional
 
-from pyspark.sql import SparkSession, DataFrame
-
-from .data_source import read_jdbc as _read_jdbc_impl
-from .spark_integration import install_jdbc_reader, jdbc as jdbc_reader
+# Core exports (NO framework dependencies)
+from .arrow_datasource import ArrowBatchDataSource, JDBCArrowDataSource
 from .exceptions import (
     JDBCReaderError,
     InvalidJDBCUrlError,
@@ -58,7 +80,11 @@ from .exceptions import (
 )
 
 __all__ = [
-    # Main API functions
+    # Core abstractions (no framework dependencies)
+    "ArrowBatchDataSource",
+    "JDBCArrowDataSource",
+
+    # Convenience functions (lazy-load frameworks)
     "read_jdbc",
     "install_jdbc_reader",
 
@@ -88,7 +114,7 @@ if not logger.handlers:
 
 
 def read_jdbc(
-    spark: SparkSession,
+    spark,  # Type hint omitted to avoid PySpark import
     url: str,
     dbtable: Optional[str] = None,
     query: Optional[str] = None,
@@ -102,12 +128,15 @@ def read_jdbc(
     predicates: Optional[str] = None,
     fetch_size: int = 10000,
     **kwargs
-) -> DataFrame:
+):
     """
-    Read from JDBC database using high-performance Arrow backends.
+    Read from JDBC database using Arrow backends, return Spark DataFrame.
 
-    This is the direct API. For a more Spark-native experience, use
-    install_jdbc_reader() and then spark.read.jdbc().
+    This is a convenience function that:
+    1. Creates JDBCArrowDataSource
+    2. Uses Spark adapter to convert to DataFrame
+
+    For more control, use the arrow_datasource and spark_adapter directly.
 
     Args:
         spark: SparkSession
@@ -154,16 +183,11 @@ def read_jdbc(
             upper_bound=1000000,
             num_partitions=10
         )
-
-        # With custom query
-        df = read_jdbc(
-            spark,
-            url="jdbc:postgresql://localhost:5432/mydb",
-            query="SELECT * FROM orders WHERE created_at > '2024-01-01'",
-            engine="adbc"
-        )
     """
-    # Build options dictionary
+    # Lazy import Spark adapter (only when actually using Spark)
+    from .spark_adapter import to_spark_dataframe
+
+    # Build options
     options = {
         "url": url,
         "engine": engine,
@@ -191,15 +215,48 @@ def read_jdbc(
     # Add any additional kwargs
     options.update(kwargs)
 
-    return _read_jdbc_impl(spark, options)
+    # Create datasource
+    datasource = JDBCArrowDataSource()
+
+    # Convert to Spark DataFrame
+    return to_spark_dataframe(spark, datasource, options)
+
+
+def install_jdbc_reader(spark) -> None:
+    """
+    Install JDBC reader into Spark session.
+
+    This adds spark.read.jdbc() method as a convenience wrapper
+    around read_jdbc(). It's a thin convenience layer.
+
+    Args:
+        spark: SparkSession
+
+    Example:
+        from pyspark.sql import SparkSession
+        from pysail.read import install_jdbc_reader
+
+        spark = SparkSession.builder.getOrCreate()
+        install_jdbc_reader(spark)
+
+        # Now use standard Spark API
+        df = spark.read.jdbc(
+            url="jdbc:postgresql://localhost/db",
+            table="orders",
+            properties={"user": "admin", "password": "secret"}
+        )
+    """
+    # Lazy import to avoid PySpark dependency
+    from .spark_integration import install_jdbc_reader as _install
+    _install(spark)
 
 
 # Deprecated: Use install_jdbc_reader() instead
-def register_jdbc_reader(spark: SparkSession) -> None:
+def register_jdbc_reader(spark) -> None:
     """
     Register JDBC reader (deprecated).
 
-    Use install_jdbc_reader() instead for better integration.
+    Use install_jdbc_reader() instead.
 
     Args:
         spark: SparkSession
