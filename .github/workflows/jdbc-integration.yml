@@ -1,0 +1,78 @@
+name: JDBC Integration Tests
+
+on:
+  workflow_call:
+
+jobs:
+  postgres:
+    name: PostgreSQL JDBC Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: my_weather_app
+          POSTGRES_PASSWORD: my_password
+          POSTGRES_DB: my_weather_app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U my_weather_app
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      LAKESAIL_TEST_PG_HOST: "127.0.0.1"
+      LAKESAIL_TEST_PG_PORT: "5432"
+      LAKESAIL_TEST_PG_DATABASE: "my_weather_app"
+      LAKESAIL_TEST_PG_USER: "my_weather_app"
+      LAKESAIL_TEST_PG_PASSWORD: "my_password"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download Python Package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: target/wheels
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pysail --find-links target/wheels
+          pip install pytest psycopg2-binary
+
+      - name: Wait for Postgres readiness
+        env:
+          PGPASSWORD: my_password
+        run: |
+          python - <<'PY'
+          import time
+
+          import psycopg2
+
+          deadline = time.time() + 60
+          while time.time() < deadline:
+              try:
+                  with psycopg2.connect(
+                      host="127.0.0.1",
+                      port=5432,
+                      dbname="my_weather_app",
+                      user="my_weather_app",
+                      password="my_password",
+                  ):
+                      break
+              except psycopg2.OperationalError:
+                  time.sleep(1)
+          else:
+              raise SystemExit("Postgres service did not become ready in time")
+          PY
+
+      - name: Run PostgreSQL JDBC integration tests
+        run: pytest python/pysail/tests/db/test_jdbc_integration.py -q -k postgres

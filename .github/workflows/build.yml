@@ -117,6 +117,15 @@ jobs:
       - setup
       - build
 
+
+  jdbc-integration:
+    name: JDBC Integration Tests
+    if: ${{ needs.setup.outputs.build_package == 'true' }}
+    uses: ./.github/workflows/jdbc-integration.yml
+    needs:
+      - setup
+      - build
+
   python-build:
     name: Python Build
     if: ${{ needs.setup.outputs.build_package == 'true' }}
