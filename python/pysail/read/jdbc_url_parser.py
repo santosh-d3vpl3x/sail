@@ -59,6 +59,11 @@ def parse_jdbc_url(jdbc_url: str, user: Optional[str] = None, password: Optional
     # For most backends, we can strip the jdbc: prefix
     connection_string = f"{driver}{rest}"
 
+    # Special handling for SQLite: ensure absolute paths have three slashes
+    # jdbc:sqlite:/path/to/file.db -> sqlite:///path/to/file.db
+    if driver == "sqlite" and rest.startswith(":/") and not rest.startswith("://"):
+        connection_string = f"{driver}://{rest[1:]}"  # sqlite:///path/to/file.db
+
     # Extract credentials from URL if present
     url_user = None
     url_password = None
