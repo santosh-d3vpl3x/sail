@@ -153,19 +153,19 @@ fn read_partition_from_python(
 ) -> Result<Vec<RecordBatch>> {
     Python::with_gil(|py| {
         // Import Python module
-        let py_module = py
-            .import(module)
-            .map_err(|e| PythonDataSourceError::ImportError(format!("Failed to import {}: {}", module, e)))?;
+        let py_module = py.import(module).map_err(|e| {
+            PythonDataSourceError::ImportError(format!("Failed to import {}: {}", module, e))
+        })?;
 
         // Get class
-        let py_class = py_module
-            .getattr(class)
-            .map_err(|e| PythonDataSourceError::ImportError(format!("Failed to get class {}: {}", class, e)))?;
+        let py_class = py_module.getattr(class).map_err(|e| {
+            PythonDataSourceError::ImportError(format!("Failed to get class {}: {}", class, e))
+        })?;
 
         // Instantiate datasource
-        let datasource = py_class
-            .call0()
-            .map_err(|e| PythonDataSourceError::ExecutionError(format!("Failed to instantiate {}: {}", class, e)))?;
+        let datasource = py_class.call0().map_err(|e| {
+            PythonDataSourceError::ExecutionError(format!("Failed to instantiate {}: {}", class, e))
+        })?;
 
         // Convert partition_spec to Python dict
         let partition_dict = json_to_py_dict(py, partition_spec)?;
@@ -176,16 +176,27 @@ fn read_partition_from_python(
         // Call read_partition() - returns iterator of PyArrow RecordBatches
         let py_batches = datasource
             .call_method1("read_partition", (partition_dict, options_dict))
-            .map_err(|e| PythonDataSourceError::ExecutionError(format!("read_partition() failed: {}", e)))?;
+            .map_err(|e| {
+                PythonDataSourceError::ExecutionError(format!("read_partition() failed: {}", e))
+            })?;
 
         // Iterate over PyArrow batches and convert to Rust Arrow batches
         let mut batches = Vec::new();
-        for py_batch_result in py_batches.iter().map_err(|e| PythonDataSourceError::ExecutionError(e.to_string()))? {
-            let py_batch = py_batch_result.map_err(|e| PythonDataSourceError::ExecutionError(e.to_string()))?;
+        for py_batch_result in py_batches
+            .iter()
+            .map_err(|e| PythonDataSourceError::ExecutionError(e.to_string()))?
+        {
+            let py_batch = py_batch_result
+                .map_err(|e| PythonDataSourceError::ExecutionError(e.to_string()))?;
 
             // Convert PyArrow RecordBatch to Rust Arrow RecordBatch (zero-copy via FFI!)
             let batch = arrow::pyarrow::PyArrowType::<RecordBatch>::try_from(py_batch)
-                .map_err(|e| PythonDataSourceError::ArrowError(format!("Failed to convert RecordBatch: {}", e)))?
+                .map_err(|e| {
+                    PythonDataSourceError::ArrowError(format!(
+                        "Failed to convert RecordBatch: {}",
+                        e
+                    ))
+                })?
                 .0;
 
             batches.push(batch);

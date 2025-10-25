@@ -98,15 +98,14 @@ impl TableProvider for PythonTableProvider {
             .map_err(|e| datafusion::common::DataFusionError::External(Box::new(e)))?;
 
         // Convert options to JSON
-        let options_json = serde_json::to_value(&self.options)
-            .map_err(|e| {
-                datafusion::common::DataFusionError::External(Box::new(
-                    PythonDataSourceError::ExecutionError(format!(
-                        "Failed to serialize options: {}",
-                        e
-                    )),
-                ))
-            })?;
+        let options_json = serde_json::to_value(&self.options).map_err(|e| {
+            datafusion::common::DataFusionError::External(Box::new(
+                PythonDataSourceError::ExecutionError(format!(
+                    "Failed to serialize options: {}",
+                    e
+                )),
+            ))
+        })?;
 
         // Create execution plan
         let exec = PythonExec::new(
@@ -129,35 +128,40 @@ fn infer_schema_from_python(
 ) -> Result<SchemaRef> {
     Python::with_gil(|py| {
         // Import Python module
-        let py_module = py
-            .import(module)
-            .map_err(|e| PythonDataSourceError::ImportError(format!("Failed to import {}: {}", module, e)))?;
+        let py_module = py.import(module).map_err(|e| {
+            PythonDataSourceError::ImportError(format!("Failed to import {}: {}", module, e))
+        })?;
 
         // Get class
-        let py_class = py_module
-            .getattr(class)
-            .map_err(|e| PythonDataSourceError::ImportError(format!("Failed to get class {}: {}", class, e)))?;
+        let py_class = py_module.getattr(class).map_err(|e| {
+            PythonDataSourceError::ImportError(format!("Failed to get class {}: {}", class, e))
+        })?;
 
         // Instantiate datasource
-        let datasource = py_class
-            .call0()
-            .map_err(|e| PythonDataSourceError::ExecutionError(format!("Failed to instantiate {}: {}", class, e)))?;
+        let datasource = py_class.call0().map_err(|e| {
+            PythonDataSourceError::ExecutionError(format!("Failed to instantiate {}: {}", class, e))
+        })?;
 
         // Convert options to Python dict
         let options_dict = PyDict::new(py);
         for (key, value) in options {
-            options_dict.set_item(key, value)
+            options_dict
+                .set_item(key, value)
                 .map_err(|e| PythonDataSourceError::ExecutionError(e.to_string()))?;
         }
 
         // Call infer_schema()
         let py_schema = datasource
             .call_method1("infer_schema", (options_dict,))
-            .map_err(|e| PythonDataSourceError::SchemaError(format!("infer_schema() failed: {}", e)))?;
+            .map_err(|e| {
+                PythonDataSourceError::SchemaError(format!("infer_schema() failed: {}", e))
+            })?;
 
         // Convert PyArrow schema to Rust Arrow schema (zero-copy via FFI!)
         let schema = arrow::pyarrow::PyArrowType::<arrow::datatypes::Schema>::try_from(py_schema)
-            .map_err(|e| PythonDataSourceError::SchemaError(format!("Failed to convert schema: {}", e)))?
+            .map_err(|e| {
+                PythonDataSourceError::SchemaError(format!("Failed to convert schema: {}", e))
+            })?
             .0;
 
         Ok(Arc::new(schema))
@@ -172,36 +176,41 @@ fn plan_partitions_from_python(
 ) -> Result<Vec<JsonValue>> {
     Python::with_gil(|py| {
         // Import Python module
-        let py_module = py
-            .import(module)
-            .map_err(|e| PythonDataSourceError::ImportError(format!("Failed to import {}: {}", module, e)))?;
+        let py_module = py.import(module).map_err(|e| {
+            PythonDataSourceError::ImportError(format!("Failed to import {}: {}", module, e))
+        })?;
 
         // Get class
-        let py_class = py_module
-            .getattr(class)
-            .map_err(|e| PythonDataSourceError::ImportError(format!("Failed to get class {}: {}", class, e)))?;
+        let py_class = py_module.getattr(class).map_err(|e| {
+            PythonDataSourceError::ImportError(format!("Failed to get class {}: {}", class, e))
+        })?;
 
         // Instantiate datasource
-        let datasource = py_class
-            .call0()
-            .map_err(|e| PythonDataSourceError::ExecutionError(format!("Failed to instantiate {}: {}", class, e)))?;
+        let datasource = py_class.call0().map_err(|e| {
+            PythonDataSourceError::ExecutionError(format!("Failed to instantiate {}: {}", class, e))
+        })?;
 
         // Convert options to Python dict
         let options_dict = PyDict::new(py);
         for (key, value) in options {
-            options_dict.set_item(key, value)
+            options_dict
+                .set_item(key, value)
                 .map_err(|e| PythonDataSourceError::ExecutionError(e.to_string()))?;
         }
 
         // Call plan_partitions()
         let py_partitions = datasource
             .call_method1("plan_partitions", (options_dict,))
-            .map_err(|e| PythonDataSourceError::PartitionError(format!("plan_partitions() failed: {}", e)))?;
+            .map_err(|e| {
+                PythonDataSourceError::PartitionError(format!("plan_partitions() failed: {}", e))
+            })?;
 
         // Convert Python list to Vec<JsonValue>
         let mut partitions = Vec::new();
-        for py_partition_result in py_partitions.iter()
-            .map_err(|e| PythonDataSourceError::PartitionError(e.to_string()))? {
+        for py_partition_result in py_partitions
+            .iter()
+            .map_err(|e| PythonDataSourceError::PartitionError(e.to_string()))?
+        {
             let py_partition = py_partition_result
                 .map_err(|e| PythonDataSourceError::PartitionError(e.to_string()))?;
 
@@ -213,8 +222,9 @@ fn plan_partitions_from_python(
                 .map_err(|e| PythonDataSourceError::PartitionError(e.to_string()))?;
 
             // Use pythonize for proper Python->Rust conversion
-            let partition_value: JsonValue = pythonize::depythonize(py_partition)
-                .map_err(|e| PythonDataSourceError::PartitionError(format!("Failed to convert partition: {}", e)))?;
+            let partition_value: JsonValue = pythonize::depythonize(py_partition).map_err(|e| {
+                PythonDataSourceError::PartitionError(format!("Failed to convert partition: {}", e))
+            })?;
 
             partitions.push(partition_value);
         }

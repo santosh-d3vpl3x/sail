@@ -22,9 +22,13 @@ impl fmt::Display for PythonDataSourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PythonDataSourceError::ImportError(msg) => write!(f, "Python import error: {}", msg),
-            PythonDataSourceError::ExecutionError(msg) => write!(f, "Python execution error: {}", msg),
+            PythonDataSourceError::ExecutionError(msg) => {
+                write!(f, "Python execution error: {}", msg)
+            }
             PythonDataSourceError::ArrowError(msg) => write!(f, "Arrow conversion error: {}", msg),
-            PythonDataSourceError::MissingOption(msg) => write!(f, "Missing required option: {}", msg),
+            PythonDataSourceError::MissingOption(msg) => {
+                write!(f, "Missing required option: {}", msg)
+            }
             PythonDataSourceError::General(msg) => write!(f, "Python datasource error: {}", msg),
         }
     }
