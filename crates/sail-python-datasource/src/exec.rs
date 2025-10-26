@@ -296,9 +296,10 @@ fn align_batch_to_schema(batch: RecordBatch, schema: &SchemaRef) -> Result<Recor
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
 
     fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
         Field::new(name, data_type, nullable)
@@ -330,14 +331,32 @@ mod tests {
 
         let aligned = align_batch_to_schema(batch, &expected_schema).unwrap();
         assert_eq!(aligned.schema().fields(), expected_schema.fields());
-        assert_eq!(aligned.column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 3);
-        assert_eq!(aligned.column(1).as_any().downcast_ref::<StringArray>().unwrap().value(0), "completed");
+        assert_eq!(
+            aligned
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            3
+        );
+        assert_eq!(
+            aligned
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "completed"
+        );
     }
 
     #[test]
     fn align_batch_missing_column_errors() {
-        let expected_schema =
-            build_schema(vec![field("count", DataType::Int64, false), field("status", DataType::Utf8, true)]);
+        let expected_schema = build_schema(vec![
+            field("count", DataType::Int64, false),
+            field("status", DataType::Utf8, true),
+        ]);
         let actual_schema = build_schema(vec![field("count", DataType::Int64, false)]);
 
         let batch = RecordBatch::try_new(
@@ -355,10 +374,8 @@ mod tests {
 
     #[test]
     fn align_batch_type_mismatch_errors() {
-        let expected_schema =
-            build_schema(vec![field("count", DataType::Int64, false)]);
-        let actual_schema =
-            build_schema(vec![field("count", DataType::Utf8, false)]);
+        let expected_schema = build_schema(vec![field("count", DataType::Int64, false)]);
+        let actual_schema = build_schema(vec![field("count", DataType::Utf8, false)]);
 
         let batch = RecordBatch::try_new(
             actual_schema,
