@@ -144,6 +144,9 @@ dependencies = [
     "pillow>=10.3.0",
     "pyiceberg[sql-sqlite,pyiceberg-core]==0.10.0",
     "pydantic>=2.11,<2.12",
+    "pyarrow>=14.0.0,<18",
+    "connectorx>=0.3.0,<1",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [[tool.hatch.envs.test.matrix]]
@@ -172,6 +175,9 @@ dependencies = [
     "pytest-reportlog>=0.4,<0.5",
     "pyiceberg[sql-sqlite,pyiceberg-core]==0.10.0",
     "pydantic>=2.11,<2.12",
+    "pyarrow>=14.0.0,<18",
+    "connectorx>=0.3.0,<1",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [[tool.hatch.envs.test-spark.matrix]]
