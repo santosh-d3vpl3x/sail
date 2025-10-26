@@ -50,7 +50,7 @@ def postgres_orders_table():
     )
 
     with conn, conn.cursor() as cur:
-        cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')  # noqa: S608
+        cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')
         cur.execute(
             f"""
             CREATE TABLE "{table_name}" (
@@ -61,10 +61,11 @@ def postgres_orders_table():
             )
             """
         )
+        # Static table/column names make this safe for test setup.
         cur.executemany(
-            f'INSERT INTO "{table_name}" (order_id, customer_name, amount, status) VALUES (%s, %s, %s, %s)',
+            f'INSERT INTO "{table_name}" (order_id, customer_name, amount, status) VALUES (%s, %s, %s, %s)',  # noqa: S608
             test_data,
-        )  # noqa: S608
+        )
 
     yield {
         "table": table_name,
@@ -72,17 +73,14 @@ def postgres_orders_table():
     }
 
     with conn, conn.cursor() as cur:
-        cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')  # noqa: S608
+        cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')
 
     conn.close()
 
 
 def _jdbc_options(table: str) -> dict[str, str]:
     """Build JDBC options for ConnectorX backend."""
-    url = (
-        f"jdbc:postgresql://{POSTGRES_CONFIG['host']}:{POSTGRES_CONFIG['port']}/"
-        f"{POSTGRES_CONFIG['database']}"
-    )
+    url = f"jdbc:postgresql://{POSTGRES_CONFIG['host']}:{POSTGRES_CONFIG['port']}/" f"{POSTGRES_CONFIG['database']}"
     return {
         "url": url,
         "dbtable": table,
@@ -102,10 +100,7 @@ def test_postgres_connectorx_basic_read(spark, postgres_orders_table):
 
     assert df.columns == ["order_id", "customer_name", "amount", "status"]
 
-    result = sorted(
-        (row["order_id"], row["customer_name"], float(row["amount"]), row["status"])
-        for row in collected
-    )
+    result = sorted((row["order_id"], row["customer_name"], float(row["amount"]), row["status"]) for row in collected)
     assert result == sorted(expected_data)
 
     grouped = df.groupBy("status").count().collect()
@@ -117,12 +112,7 @@ def test_postgres_connectorx_filter_pushdown(spark, postgres_orders_table):
     """Ensure where predicates are respected when reading from PostgreSQL."""
     table = postgres_orders_table["table"]
 
-    df = (
-        spark.read.format("jdbc")
-        .options(**_jdbc_options(table))
-        .option("predicates", "status = 'completed'")
-        .load()
-    )
+    df = spark.read.format("jdbc").options(**_jdbc_options(table)).option("predicates", "status = 'completed'").load()
 
     collected = df.collect()
     assert all(row["status"] == "completed" for row in collected)
