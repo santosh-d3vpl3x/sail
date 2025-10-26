@@ -399,10 +399,10 @@ impl RecordBatchStream for PythonRecordBatchStream {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
 
     type TestResult = Result<()>;
 
