@@ -81,6 +81,15 @@ class ConnectorXBackend(DatabaseBackend):
             raise DatabaseError(message) from err
 
         batches = arrow_table.to_batches()
+
+        # Ensure we always return at least one batch with schema (even if empty)
+        # This is important for schema inference with LIMIT 0 queries
+        if not batches:
+            # Create empty lists for each field in the schema
+            empty_dict = {field.name: [] for field in arrow_table.schema}
+            empty_batch = pa.RecordBatch.from_pydict(empty_dict, schema=arrow_table.schema)
+            batches = [empty_batch]
+
         logger.info(
             "ConnectorX read %s rows in %s batches from %s",
             arrow_table.num_rows,

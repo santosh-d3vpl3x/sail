@@ -1,0 +1,120 @@
+ARG RUST_VERSION=1.88.0
+ARG RUST_PROFILE=dev
+ARG RUSTFLAGS=""
+ARG PYSPARK_VERSION=4.0.0
+
+FROM python:3.11-slim AS builder
+
+ARG RUST_VERSION
+ARG RUST_PROFILE
+ARG RUSTFLAGS
+
+ENV RUSTFLAGS="${RUSTFLAGS}"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        gcc \
+        libc6-dev \
+        protobuf-compiler \
+        libprotobuf-dev \
+        curl \
+        git \
+        pkg-config \
+        libssl-dev \
+        patchelf
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /tmp/rustup-init && \
+    chmod a+x /tmp/rustup-init && \
+    /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain ${RUST_VERSION}
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install maturin for building Python wheels
+RUN pip install --no-cache-dir 'maturin>=1.0,<2.0'
+
+WORKDIR /app
+
+# Copy only dependency manifests first to cache dependency builds
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+
+# Create dummy source files to build dependencies (this layer will be cached)
+RUN mkdir -p python/pysail && \
+    echo "# dummy" > python/pysail/__init__.py
+
+# Pre-build dependencies only (this will be cached unless Cargo files change)
+RUN --mount=type=cache,target=/root/.cargo/registry/ \
+    --mount=type=cache,target=/root/.cargo/git/ \
+    --mount=type=cache,target=/app/target/ \
+    cargo fetch
+
+# Now copy the actual source code and Python files
+COPY pyproject.toml README.md LICENSE ./
+COPY python/ ./python/
+
+# Build the Rust CLI binary (will reuse cached dependencies)
+RUN --mount=type=cache,target=/root/.cargo/registry/ \
+    --mount=type=cache,target=/root/.cargo/git/ \
+    --mount=type=cache,target=/app/target/ \
+    RUST_TARGET_SUBDIR=$(case "${RUST_PROFILE}" in \
+        dev|test) echo "debug" ;; \
+        release|bench) echo "release" ;; \
+        *) echo "${RUST_PROFILE}" ;; \
+    esac) && \
+    cargo build -p sail-cli --profile ${RUST_PROFILE} --bins && \
+    cp /app/target/${RUST_TARGET_SUBDIR}/sail /usr/local/bin
+
+# Build the Python package (pysail) using Maturin (will reuse cached Rust builds)
+# Do NOT pass --manifest-path, let maturin read it from pyproject.toml [tool.maturin] section
+RUN --mount=type=cache,target=/root/.cargo/registry/ \
+    --mount=type=cache,target=/root/.cargo/git/ \
+    --mount=type=cache,target=/app/target/ \
+    cd /app && \
+    echo "=== Checking pyproject.toml exists ===" && \
+    ls -lh pyproject.toml && \
+    echo "=== Building with maturin ===" && \
+    maturin build --profile=${RUST_PROFILE} --out=dist && \
+    echo "=== Wheel files created ===" && \
+    ls -lh dist/ && \
+    echo "=== Wheel contents ===" && \
+    unzip -l dist/*.whl | grep -E "(pysail/|_native|dist-info)" | head -30
+
+FROM python:3.11-slim
+
+ARG PYSPARK_VERSION
+
+# Install system dependencies (if needed for JDBC/connectorx)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libssl3 \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install pyspark
+RUN python3 -m pip install --no-cache-dir "pyspark[connect]==${PYSPARK_VERSION}"
+
+# Install JDBC backend dependencies for pysail
+# Using connectorx as it's fast and well-supported
+RUN python3 -m pip install --no-cache-dir \
+    "pyarrow>=14.0.0,<18" \
+    "connectorx>=0.3.0,<1"
+
+# Copy and install the pysail wheel
+COPY --from=builder /app/dist/*.whl /tmp/
+RUN echo "=== Installing wheel ===" && \
+    ls -lh /tmp/*.whl && \
+    echo "=== Wheel contents check ===" && \
+    unzip -l /tmp/*.whl | grep -E "pysail/" | head -15 && \
+    echo "=== Installing ===" && \
+    pip install --no-cache-dir /tmp/*.whl && \
+    echo "=== Verifying installation ===" && \
+    pip show pysail && \
+    echo "=== Site packages check ===" && \
+    ls -la /usr/local/lib/python3.11/site-packages/ | grep -E "pysail|_native" && \
+    rm /tmp/*.whl
+
+# Copy the sail CLI binary
+COPY --from=builder /usr/local/bin/sail /usr/local/bin
+
+ENTRYPOINT ["/usr/local/bin/sail"]

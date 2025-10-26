@@ -60,7 +60,7 @@ class TestJDBCArrowDataSource:
         schema = datasource.infer_schema(options)
 
         assert schema.names == ["id", "name"]
-        assert backend.calls[0][1] == "SELECT * FROM orders LIMIT 1"
+        assert backend.calls[0][1] == "SELECT * FROM orders LIMIT 0"
         assert backend.calls[0][2] == 1
 
     def test_plan_partitions_with_explicit_predicates(self, monkeypatch):
