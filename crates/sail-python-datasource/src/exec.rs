@@ -294,103 +294,6 @@ fn align_batch_to_schema(batch: RecordBatch, schema: &SchemaRef) -> Result<Recor
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use arrow::array::{Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-
-    fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
-        Field::new(name, data_type, nullable)
-    }
-
-    fn build_schema(fields: Vec<Field>) -> SchemaRef {
-        Arc::new(Schema::new(fields))
-    }
-
-    #[test]
-    fn align_batch_reorders_columns() {
-        let expected_schema = build_schema(vec![
-            field("count", DataType::Int64, false),
-            field("status", DataType::Utf8, true),
-        ]);
-        let actual_schema = build_schema(vec![
-            field("status", DataType::Utf8, true),
-            field("count", DataType::Int64, false),
-        ]);
-
-        let batch = RecordBatch::try_new(
-            actual_schema,
-            vec![
-                Arc::new(StringArray::from(vec!["completed", "pending"])) as _,
-                Arc::new(Int64Array::from(vec![3, 2])) as _,
-            ],
-        )
-        .unwrap();
-
-        let aligned = align_batch_to_schema(batch, &expected_schema).unwrap();
-        assert_eq!(aligned.schema().fields(), expected_schema.fields());
-        assert_eq!(
-            aligned
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap()
-                .value(0),
-            3
-        );
-        assert_eq!(
-            aligned
-                .column(1)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap()
-                .value(0),
-            "completed"
-        );
-    }
-
-    #[test]
-    fn align_batch_missing_column_errors() {
-        let expected_schema = build_schema(vec![
-            field("count", DataType::Int64, false),
-            field("status", DataType::Utf8, true),
-        ]);
-        let actual_schema = build_schema(vec![field("count", DataType::Int64, false)]);
-
-        let batch = RecordBatch::try_new(
-            actual_schema,
-            vec![Arc::new(Int64Array::from(vec![1, 2])) as _],
-        )
-        .unwrap();
-
-        let err = align_batch_to_schema(batch, &expected_schema).unwrap_err();
-        let PythonDataSourceError::SchemaError(message) = err else {
-            panic!("expected SchemaError, got {err:?}");
-        };
-        assert!(message.contains("Column 'status' not found"), "{message}");
-    }
-
-    #[test]
-    fn align_batch_type_mismatch_errors() {
-        let expected_schema = build_schema(vec![field("count", DataType::Int64, false)]);
-        let actual_schema = build_schema(vec![field("count", DataType::Utf8, false)]);
-
-        let batch = RecordBatch::try_new(
-            actual_schema,
-            vec![Arc::new(StringArray::from(vec!["1", "2"])) as _],
-        )
-        .unwrap();
-
-        let err = align_batch_to_schema(batch, &expected_schema).unwrap_err();
-        let PythonDataSourceError::SchemaError(message) = err else {
-            panic!("expected SchemaError, got {err:?}");
-        };
-        assert!(message.contains("type Utf8"), "{message}");
-    }
-}
-
 /// Convert JSON value to Python dict
 fn json_to_py_dict<'py>(py: Python<'py>, value: &JsonValue) -> Result<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
@@ -491,5 +394,118 @@ impl Stream for PythonRecordBatchStream {
 impl RecordBatchStream for PythonRecordBatchStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use arrow::array::{ArrayRef, Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    type TestResult = Result<()>;
+
+    fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
+        Field::new(name, data_type, nullable)
+    }
+
+    fn build_schema(fields: Vec<Field>) -> SchemaRef {
+        Arc::new(Schema::new(fields))
+    }
+
+    fn create_record_batch(schema: SchemaRef, columns: Vec<ArrayRef>) -> Result<RecordBatch> {
+        RecordBatch::try_new(schema, columns)
+            .map_err(|err| PythonDataSourceError::ArrowError(err.to_string()))
+    }
+
+    #[test]
+    fn align_batch_reorders_columns() -> TestResult {
+        let expected_schema = build_schema(vec![
+            field("count", DataType::Int64, false),
+            field("status", DataType::Utf8, true),
+        ]);
+        let actual_schema = build_schema(vec![
+            field("status", DataType::Utf8, true),
+            field("count", DataType::Int64, false),
+        ]);
+
+        let batch = create_record_batch(
+            actual_schema,
+            vec![
+                Arc::new(StringArray::from(vec!["completed", "pending"])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![3, 2])) as ArrayRef,
+            ],
+        )?;
+
+        let aligned = align_batch_to_schema(batch, &expected_schema)?;
+        assert_eq!(aligned.schema().fields(), expected_schema.fields());
+
+        let counts = aligned
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| {
+                PythonDataSourceError::General("Expected Int64Array for 'count' column".into())
+            })?;
+        assert_eq!(counts.value(0), 3);
+
+        let statuses = aligned
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                PythonDataSourceError::General("Expected StringArray for 'status' column".into())
+            })?;
+        assert_eq!(statuses.value(0), "completed");
+
+        Ok(())
+    }
+
+    #[test]
+    fn align_batch_missing_column_errors() -> TestResult {
+        let expected_schema = build_schema(vec![
+            field("count", DataType::Int64, false),
+            field("status", DataType::Utf8, true),
+        ]);
+        let actual_schema = build_schema(vec![field("count", DataType::Int64, false)]);
+
+        let batch = create_record_batch(
+            actual_schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
+        )?;
+
+        let err = align_batch_to_schema(batch, &expected_schema);
+        assert!(
+            matches!(
+                &err,
+                Err(PythonDataSourceError::SchemaError(message))
+                    if message.contains("Column 'status' not found")
+            ),
+            "unexpected result: {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn align_batch_type_mismatch_errors() -> TestResult {
+        let expected_schema = build_schema(vec![field("count", DataType::Int64, false)]);
+        let actual_schema = build_schema(vec![field("count", DataType::Utf8, false)]);
+
+        let batch = create_record_batch(
+            actual_schema,
+            vec![Arc::new(StringArray::from(vec!["1", "2"])) as ArrayRef],
+        )?;
+
+        let err = align_batch_to_schema(batch, &expected_schema);
+        assert!(
+            matches!(
+                &err,
+                Err(PythonDataSourceError::SchemaError(message))
+                    if message.contains("type Utf8")
+            ),
+            "unexpected result: {err:?}"
+        );
+        Ok(())
     }
 }
