@@ -42,6 +42,30 @@ test = [
 mcp = [
     "mcp>=1.0.0,<2",
 ]
+# JDBC reader backends
+database-connectorx = [
+    "pyarrow>=14.0.0,<18",
+    "connectorx>=0.3.0,<1",
+]
+database-adbc = [
+    "pyarrow>=14.0.0,<18",
+    "adbc-driver-manager>=1.6.0,<2",
+    "adbc-driver-postgresql>=1.6.0,<2",
+    "adbc-driver-sqlite>=1.6.0,<2",
+]
+database-fallback = [
+    "pyarrow>=14.0.0,<18",
+    "pyodbc>=5.0.0,<6",
+]
+# Install all database backends
+database-all = [
+    "pyarrow>=14.0.0,<18",
+    "connectorx>=0.3.0,<1",
+    "adbc-driver-manager>=1.6.0,<2",
+    "adbc-driver-postgresql>=1.6.0,<2",
+    "adbc-driver-sqlite>=1.6.0,<2",
+    "pyodbc>=5.0.0,<6",
+]
 
 [project.urls]
 Homepage = "https://lakesail.com"
@@ -120,6 +144,9 @@ dependencies = [
     "pillow>=10.3.0",
     "pyiceberg[sql-sqlite,pyiceberg-core]==0.10.0",
     "pydantic>=2.11,<2.12",
+    "pyarrow>=14.0.0,<18",
+    "connectorx>=0.3.0,<1",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [[tool.hatch.envs.test.matrix]]
@@ -148,6 +175,9 @@ dependencies = [
     "pytest-reportlog>=0.4,<0.5",
     "pyiceberg[sql-sqlite,pyiceberg-core]==0.10.0",
     "pydantic>=2.11,<2.12",
+    "pyarrow>=14.0.0,<18",
+    "connectorx>=0.3.0,<1",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [[tool.hatch.envs.test-spark.matrix]]

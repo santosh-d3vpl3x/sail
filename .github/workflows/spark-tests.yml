@@ -34,6 +34,20 @@ jobs:
     name: Test
     if: needs.setup.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sail
+          POSTGRES_PASSWORD: sail
+          POSTGRES_DB: sail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sail"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     needs:
       - setup
     env:
@@ -42,6 +56,12 @@ jobs:
       # Coverage environment variables
       RUSTC_WORKSPACE_WRAPPER: ${{ github.workspace }}/.github/scripts/rustc-workspace-wrapper.sh
       LLVM_PROFILE_FILE: ${{ github.workspace }}/target/sail-spark-${{ inputs.spark_version }}-%p-%m.profraw
+      # PostgreSQL connectorx integration tests
+      SAIL_TEST_POSTGRES_HOST: "127.0.0.1"
+      SAIL_TEST_POSTGRES_PORT: "5432"
+      SAIL_TEST_POSTGRES_DB: "sail"
+      SAIL_TEST_POSTGRES_USER: "sail"
+      SAIL_TEST_POSTGRES_PASSWORD: "sail"
     steps:
       - uses: actions/checkout@v4
 
