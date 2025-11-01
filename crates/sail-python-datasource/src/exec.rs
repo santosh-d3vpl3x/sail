@@ -250,6 +250,21 @@ fn align_batch_to_schema(batch: RecordBatch, schema: &SchemaRef) -> Result<Recor
     let expected = schema.as_ref();
     let actual = batch.schema();
 
+    // Special case: if expected schema has 0 columns (e.g., for count()),
+    // create an empty RecordBatch with just the row count
+    if expected.fields().is_empty() {
+        return RecordBatch::try_new_with_options(
+            schema.clone(),
+            vec![],
+            &arrow::array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+        )
+        .map_err(|e| {
+            PythonDataSourceError::ArrowError(format!(
+                "Failed to create empty RecordBatch with row count: {e}"
+            ))
+        });
+    }
+
     if actual.fields().len() == expected.fields().len()
         && actual
             .fields()

@@ -60,6 +60,7 @@ class ADBCBackend(DatabaseBackend):
 
         batches: list[pa.RecordBatch] = []
         method_used: str | None = None
+        result_schema: pa.Schema | None = None
 
         try:
             with (
@@ -76,12 +77,17 @@ class ADBCBackend(DatabaseBackend):
                     for batch in cursor.fetch_arrow_batches():
                         if isinstance(batch, pa.RecordBatch):
                             batches.append(batch)
+                            if result_schema is None:
+                                result_schema = batch.schema
                         else:
                             batches.extend(batch.to_batches())
+                            if result_schema is None:
+                                result_schema = batch.schema
                 elif hasattr(cursor, "fetch_arrow_table"):
                     method_used = "fetch_arrow_table"
                     logger.debug("Using fetch_arrow_table() (ADBC < 1.6.0)")
                     table = cursor.fetch_arrow_table()
+                    result_schema = table.schema
                     batches = table.to_batches()
         except DatabaseError:
             raise
@@ -97,6 +103,14 @@ class ADBCBackend(DatabaseBackend):
                 "Please upgrade adbc-driver-manager."
             )
             raise DatabaseError(message)
+
+        # Ensure we always return at least one batch with schema (even if empty)
+        # This is important for schema inference with LIMIT 0 queries
+        if not batches and result_schema is not None:
+            # Create empty lists for each field in the schema
+            empty_dict = {field.name: [] for field in result_schema}
+            empty_batch = pa.RecordBatch.from_pydict(empty_dict, schema=result_schema)
+            batches = [empty_batch]
 
         total_rows = sum(batch.num_rows for batch in batches)
         logger.info(

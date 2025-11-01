@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::Result as DFResult;
-use datafusion::logical_expr::{Expr, TableType};
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -78,6 +78,15 @@ impl TableProvider for PythonTableProvider {
         TableType::Base
     }
 
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> DFResult<Vec<TableProviderFilterPushDown>> {
+        // Python datasources don't currently support filter pushdown
+        // Return Unsupported for all filters so DataFusion applies them after reading
+        Ok(vec![TableProviderFilterPushDown::Unsupported; filters.len()])
+    }
+
     async fn scan(
         &self,
         _session: &dyn Session,
@@ -85,13 +94,28 @@ impl TableProvider for PythonTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        // Apply projection to schema if provided
+        // Handle projection
+        log::info!("[PYTHON_DATASOURCE] scan called with projection: {:?}, schema has {} fields",
+                   projection, self.schema.fields().len());
+
         let schema = if let Some(projection) = projection {
-            let projected_schema = self.schema.project(projection)?;
-            Arc::new(projected_schema)
+            if projection.is_empty() {
+                // Empty projection (e.g., count()) - use empty schema
+                // The align_batch_to_schema function will handle creating empty batches
+                // with row counts preserved
+                log::info!("[PYTHON_DATASOURCE] Using empty schema for empty projection");
+                Arc::new(arrow::datatypes::Schema::empty())
+            } else {
+                log::info!("[PYTHON_DATASOURCE] Projecting to {} fields", projection.len());
+                let projected_schema = self.schema.project(projection)?;
+                Arc::new(projected_schema)
+            }
         } else {
+            log::info!("[PYTHON_DATASOURCE] No projection, using full schema");
             self.schema.clone()
         };
+
+        log::info!("[PYTHON_DATASOURCE] final schema has {} fields", schema.fields().len());
 
         // Plan partitions via Python
         let partitions = plan_partitions_from_python(&self.module, &self.class, &self.options)

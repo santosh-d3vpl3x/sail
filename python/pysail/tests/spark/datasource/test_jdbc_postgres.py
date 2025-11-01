@@ -117,3 +117,30 @@ def test_postgres_connectorx_filter_pushdown(spark, postgres_orders_table):
     collected = df.collect()
     assert all(row["status"] == "completed" for row in collected)
     assert len(collected) == 3  # noqa: PLR2004
+
+
+def test_postgres_connectorx_count(spark, postgres_orders_table):
+    """Test df.count() works correctly with empty projection.
+
+    This is a regression test for the bug where count() would fail with:
+    KeyError: "The passed mapping doesn't contain the following field(s) of the schema..."
+
+    The issue was that PyArrow's from_pydict() requires all schema fields to be present,
+    even when creating an empty batch. The fix creates empty lists for each field.
+    """
+    table = postgres_orders_table["table"]
+    expected_count = len(postgres_orders_table["data"])
+
+    df = spark.read.format("jdbc").options(**_jdbc_options(table)).load()
+
+    # Test direct count (triggers empty projection)
+    count = df.count()
+    assert count == expected_count, f"Expected {expected_count} rows, got {count}"
+
+    # Test count after filter
+    completed_count = df.filter(df.status == "completed").count()
+    assert completed_count == 3, f"Expected 3 completed orders, got {completed_count}"  # noqa: PLR2004
+
+    # Test count with empty result
+    empty_count = df.filter(df.amount > 1000).count()
+    assert empty_count == 0, f"Expected 0 rows for amount > 1000, got {empty_count}"

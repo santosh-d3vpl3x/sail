@@ -20,4 +20,5 @@ log = { workspace = true }
 fastrace = { workspace = true }
 
 [lib]
+name = "_native"
 crate-type = ["cdylib"]
