@@ -1,0 +1,47 @@
+# PySpark container with Kerberos support for HMS testing
+# Based on official Spark image with Kerberos client libraries added
+
+FROM apache/spark:3.5.0-python3
+
+USER root
+
+# Install Kerberos client libraries and utilities
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        krb5-user \
+        krb5-config \
+        libkrb5-dev \
+        netcat-openbsd \
+        curl \
+        vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies for testing
+RUN pip install --no-cache-dir \
+    pyspark==3.5.0 \
+    pytest==7.4.3 \
+    pytest-timeout==2.2.0 \
+    pyarrow==14.0.1 \
+    pandas==2.1.4
+
+# Create directories for Kerberos configuration and test results
+RUN mkdir -p /etc/security/keytabs /tests /test-results
+
+# Set environment variables for Kerberos
+ENV KRB5_CONFIG=/etc/krb5.conf
+ENV KRB5_CLIENT_KTNAME=/etc/security/keytabs/client.keytab
+
+# Configure Spark for Kerberos and HMS
+ENV SPARK_HOME=/opt/spark
+ENV PYTHONPATH=${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-*.zip
+ENV PYSPARK_PYTHON=python3
+
+# Create log directory
+RUN mkdir -p /opt/spark/logs && \
+    chmod 777 /opt/spark/logs
+
+# Set working directory
+WORKDIR /tests
+
+# Default command: keep container running for interactive testing
+CMD ["tail", "-f", "/dev/null"]

@@ -1,0 +1,178 @@
+name: HMS Kerberos Integration Tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    paths:
+      - 'crates/sail-catalog-hms/**'
+      - '.github/workflows/hms-kerberos-tests.yml'
+  pull_request:
+    paths:
+      - 'crates/sail-catalog-hms/**'
+      - '.github/workflows/hms-kerberos-tests.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  hms-kerberos-integration:
+    name: HMS Kerberos Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-hms-kerb-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-hms-kerb-
+
+      - name: Start Kerberos + HMS environment
+        run: |
+          cd crates/sail-catalog-hms/docker
+          docker-compose -f docker-compose-kerberos.yml up -d --build
+        env:
+          COMPOSE_HTTP_TIMEOUT: 300
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for KDC to initialize..."
+          timeout 120s bash -c 'until docker logs hms-kdc 2>&1 | grep -q "initialization complete"; do sleep 2; done' || true
+
+          echo "Waiting for HMS to be ready..."
+          timeout 180s bash -c 'until docker logs hms-kerberized 2>&1 | grep -q "Started metastore server"; do sleep 2; done' || true
+
+          echo "Waiting for PostgreSQL..."
+          timeout 60s bash -c 'until docker exec hms-postgres-kerb pg_isready -U hive; do sleep 2; done'
+
+          echo "All services ready!"
+
+      - name: Show service logs (debug)
+        if: always()
+        run: |
+          echo "=== KDC Logs ==="
+          docker logs hms-kdc || true
+
+          echo "=== HMS Logs ==="
+          docker logs hms-kerberized || true
+
+          echo "=== PostgreSQL Logs ==="
+          docker logs hms-postgres-kerb || true
+
+      - name: Verify Kerberos setup
+        run: |
+          echo "Checking keytabs..."
+          docker exec hms-kdc ls -lh /keytabs/ || true
+
+          echo "Checking principals..."
+          docker exec hms-kdc kadmin.local -q "listprincs" | grep -E "(hive|client)" || true
+
+      - name: Run PySpark integration tests
+        run: |
+          cd crates/sail-catalog-hms/docker
+          docker-compose -f docker-compose-kerberos.yml run --rm test-runner
+        timeout-minutes: 15
+
+      - name: Copy test results
+        if: always()
+        run: |
+          docker cp test-runner:/test-results ./test-results || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: hms-kerberos-test-results
+          path: test-results/
+          retention-days: 7
+
+      - name: Upload JUnit test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: junit-results
+          path: test-results/junit.xml
+          retention-days: 7
+
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: 'test-results/junit.xml'
+          check_name: HMS Kerberos Test Results
+          fail_on_failure: true
+
+      - name: Show test logs
+        if: always()
+        run: |
+          echo "=== Test Runner Logs ==="
+          docker logs test-runner || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd crates/sail-catalog-hms/docker
+          docker-compose -f docker-compose-kerberos.yml down -v
+
+  hms-kerberos-manual-test:
+    name: Manual Interactive Test Instructions
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display manual test instructions
+        run: |
+          cat << 'EOF'
+          ============================================
+          HMS Kerberos Manual Testing Instructions
+          ============================================
+
+          To run tests locally:
+
+          1. Start the Kerberos + HMS environment:
+             cd crates/sail-catalog-hms/docker
+             docker-compose -f docker-compose-kerberos.yml up -d
+
+          2. Wait for services (about 2-3 minutes):
+             docker-compose -f docker-compose-kerberos.yml logs -f
+
+          3. Run all tests:
+             docker-compose -f docker-compose-kerberos.yml run --rm test-runner
+
+          4. Or run interactive PySpark shell:
+             docker-compose -f docker-compose-kerberos.yml run --rm pyspark-client
+
+             Then inside the container:
+             kinit -kt /etc/security/keytabs/client.keytab client@EXAMPLE.COM
+             pyspark
+
+          5. Run specific tests:
+             docker-compose -f docker-compose-kerberos.yml run --rm pyspark-client \
+               pytest /tests/test_basic_operations.py -v
+
+          6. Cleanup:
+             docker-compose -f docker-compose-kerberos.yml down -v
+
+          ============================================
+          Test Coverage:
+          - Basic table operations (create, read, list, drop)
+          - Write operations (saveAsTable, insertInto)
+          - Partition operations (create, add, drop, filter)
+          - Schema operations (complex types, ALTER TABLE)
+          - Kerberos authentication flow
+          ============================================
+          EOF

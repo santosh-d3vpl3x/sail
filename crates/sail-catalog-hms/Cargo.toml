@@ -1,0 +1,77 @@
+[package]
+name = "sail-catalog-hms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Hive Metastore catalog provider for Sail"
+
+[lints]
+workspace = true
+
+[dependencies]
+# LakeSail dependencies
+sail-catalog = { path = "../sail-catalog" }
+sail-common = { path = "../sail-common" }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Thrift (using placeholder, will be implemented later)
+# volo-thrift = "0.10"
+
+# Connection pooling
+bb8 = "0.8"
+async-once-cell = "0.5"
+
+# Caching
+moka = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = "1.0"
+
+# Serialization
+serde = { workspace = true }
+
+# URL parsing
+url = { workspace = true }
+urlencoding = "2.1"
+
+# Date/time
+chrono = { workspace = true }
+
+# Regex for type parsing
+regex = { workspace = true }
+
+# Logging
+tracing = "0.1"
+
+# Collections
+dashmap = { workspace = true }
+
+# Arrow types for schema conversion
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+
+# Kerberos/GSSAPI support (same library as hdfs-native)
+# Dynamic linking to system libgssapi_krb5
+libgssapi = { version = "0.7", optional = true }
+
+[features]
+default = []
+# Enable Kerberos authentication support
+kerberos = ["libgssapi"]
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+mockall = "0.13"
+rstest = "0.22"
+tempfile = "3.13"
+
+# [build-dependencies]
+# For Thrift code generation (to be implemented)
+# pilota-build = "0.11"

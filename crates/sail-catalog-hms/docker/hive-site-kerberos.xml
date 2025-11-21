@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Hive Metastore configuration with Kerberos authentication enabled
+  Used for testing HMS catalog provider with Kerberos
+-->
+<configuration>
+
+  <!-- Database connection settings -->
+  <property>
+    <name>javax.jdo.option.ConnectionDriverName</name>
+    <value>org.postgresql.Driver</value>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionURL</name>
+    <value>jdbc:postgresql://postgres.example.com:5432/metastore</value>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionUserName</name>
+    <value>hive</value>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionPassword</name>
+    <value>hive</value>
+  </property>
+
+  <!-- Warehouse location -->
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>/warehouse</value>
+  </property>
+
+  <!-- Metastore server settings -->
+  <property>
+    <name>metastore.thrift.uris</name>
+    <value>thrift://hms.example.com:9083</value>
+  </property>
+
+  <property>
+    <name>hive.metastore.uris</name>
+    <value>thrift://hms.example.com:9083</value>
+  </property>
+
+  <!-- Kerberos authentication settings -->
+  <property>
+    <name>hive.metastore.sasl.enabled</name>
+    <value>true</value>
+    <description>Enable SASL (Kerberos) authentication for metastore</description>
+  </property>
+
+  <property>
+    <name>hive.metastore.kerberos.keytab.file</name>
+    <value>/etc/security/keytabs/hive.keytab</value>
+    <description>Keytab file for metastore service principal</description>
+  </property>
+
+  <property>
+    <name>hive.metastore.kerberos.principal</name>
+    <value>hive/hms.example.com@EXAMPLE.COM</value>
+    <description>Metastore service principal name</description>
+  </property>
+
+  <!-- Client Kerberos settings -->
+  <property>
+    <name>hive.metastore.client.kerberos.principal</name>
+    <value>client@EXAMPLE.COM</value>
+    <description>Client principal for metastore connections</description>
+  </property>
+
+  <!-- SASL quality of protection -->
+  <property>
+    <name>hive.metastore.sasl.qop</name>
+    <value>auth</value>
+    <description>SASL QoP: auth (authentication only), auth-int (integrity), auth-conf (confidentiality)</description>
+  </property>
+
+  <!-- Thrift server settings -->
+  <property>
+    <name>hive.metastore.server.max.threads</name>
+    <value>100</value>
+  </property>
+
+  <property>
+    <name>hive.metastore.server.min.threads</name>
+    <value>10</value>
+  </property>
+
+  <!-- Schema verification -->
+  <property>
+    <name>hive.metastore.schema.verification</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>datanucleus.schema.autoCreateAll</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>datanucleus.autoCreateSchema</name>
+    <value>true</value>
+  </property>
+
+  <!-- Event listeners (disabled for testing) -->
+  <property>
+    <name>hive.metastore.event.listeners</name>
+    <value></value>
+  </property>
+
+  <!-- Statistics -->
+  <property>
+    <name>hive.metastore.stats.autogather</name>
+    <value>true</value>
+  </property>
+
+  <!-- Partition retention -->
+  <property>
+    <name>hive.metastore.partition.name.whitelist.pattern</name>
+    <value>.*</value>
+  </property>
+
+  <!-- Transaction/ACID settings (for HMS 3.0+) -->
+  <property>
+    <name>hive.support.concurrency</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>hive.txn.manager</name>
+    <value>org.apache.hadoop.hive.ql.lockmgr.DbTxnManager</value>
+  </property>
+
+  <property>
+    <name>hive.compactor.initiator.on</name>
+    <value>false</value>
+    <description>Disable compactor for testing</description>
+  </property>
+
+  <property>
+    <name>hive.compactor.worker.threads</name>
+    <value>0</value>
+  </property>
+
+  <!-- Logging -->
+  <property>
+    <name>hive.server2.logging.operation.level</name>
+    <value>VERBOSE</value>
+  </property>
+
+</configuration>
