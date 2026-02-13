@@ -602,5 +602,5 @@ message PythonDataSourceWriteExecNode {
   // Whether writer is DataSourceArrowWriter (true) or DataSourceWriter (false)
   bool is_arrow = 3;
   // Input plan (data to write)
-  datafusion.PhysicalPlanNode input = 4;
+  bytes input = 4;
 }
