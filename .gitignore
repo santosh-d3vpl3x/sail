@@ -98,7 +98,9 @@ docs/.vitepress/.temp
 # LLVM coverage files
 *.profraw
 
-# Claude Code settings
+# Claude Code settings (except skills)
 .claude/
+!.claude/skills/
+!.claude/skills/**
 
 CLAUDE.md
