@@ -72,6 +72,134 @@ pub fn py_schema_to_rust(_py: Python<'_>, py_schema: &Bound<'_, PyAny>) -> Resul
     Ok(Arc::new(schema))
 }
 
+/// Convert a Rust Arrow RecordBatch to a Python PyArrow RecordBatch.
+///
+/// Uses the Arrow C Data Interface for zero-copy conversion.
+/// This is used for the Arrow-based write path (DataSourceArrowWriter).
+pub fn rust_record_batch_to_py(py: Python<'_>, batch: &RecordBatch) -> Result<PyObject> {
+    use arrow_pyarrow::ToPyArrow;
+
+    batch.to_pyarrow(py).map_err(|e| {
+        DataFusionError::External(Box::new(std::io::Error::other(format!(
+            "Failed to convert RecordBatch to PyArrow: {}",
+            e
+        ))))
+    })
+}
+
+/// Convert a Rust Arrow RecordBatch to Python Row objects.
+///
+/// This is used for the Row-based write path (DataSourceWriter).
+/// Each row is converted to a PySpark Row object (tuple-like).
+pub fn record_batch_to_py_rows(py: Python<'_>, batch: &RecordBatch) -> Result<Vec<PyObject>> {
+    use pyo3::types::PyTuple;
+
+    let num_rows = batch.num_rows();
+    let num_cols = batch.num_columns();
+    let mut rows = Vec::with_capacity(num_rows);
+
+    for row_idx in 0..num_rows {
+        let mut row_values = Vec::with_capacity(num_cols);
+
+        for col_idx in 0..num_cols {
+            let column = batch.column(col_idx);
+            let value = extract_python_value(py, column, row_idx)?;
+            row_values.push(value);
+        }
+
+        // Create a tuple for each row (PySpark Row is tuple-like)
+        let row_tuple = PyTuple::new(py, row_values).map_err(py_err)?;
+        rows.push(row_tuple.into());
+    }
+
+    Ok(rows)
+}
+
+/// Extract a Python value from an Arrow array at a given index.
+fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Result<PyObject> {
+    use arrow::array::Array;
+
+    if array.is_null(row_idx) {
+        return Ok(py.None());
+    }
+
+    match array.data_type() {
+        DataType::Null => Ok(py.None()),
+        DataType::Boolean => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("Failed to downcast to BooleanArray".to_string())
+                })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Int32 => {
+            let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
+                DataFusionError::Execution("Failed to downcast to Int32Array".to_string())
+            })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Int64 => {
+            let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                DataFusionError::Execution("Failed to downcast to Int64Array".to_string())
+            })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Float32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("Failed to downcast to Float32Array".to_string())
+                })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Float64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("Failed to downcast to Float64Array".to_string())
+                })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Utf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("Failed to downcast to StringArray".to_string())
+                })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Date32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("Failed to downcast to Date32Array".to_string())
+                })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "Failed to downcast to TimestampMicrosecondArray".to_string(),
+                    )
+                })?;
+            Ok(arr.value(row_idx).into_py(py))
+        }
+        other => Err(DataFusionError::NotImplemented(format!(
+            "Data type {:?} not supported in MVP. Available in later PRs.",
+            other
+        ))),
+    }
+}
+
 /// Validate that two schemas are compatible.
 ///
 /// Checks field names and types match. Field metadata is ignored.
@@ -293,5 +421,108 @@ mod tests {
         let schema2 = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
 
         assert!(validate_schema(&schema1, &schema2).is_err());
+    }
+
+    #[test]
+    fn test_rust_record_batch_to_py() {
+        pyo3::prepare_freethreaded_python();
+
+        Python::with_gil(|py| {
+            // Create a simple RecordBatch
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("value", DataType::Float64, true),
+            ]));
+
+            let id_array = Int32Array::from(vec![1, 2, 3]);
+            let value_array = Float64Array::from(vec![Some(1.5), None, Some(3.5)]);
+
+            let batch =
+                RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(value_array)])
+                    .unwrap();
+
+            // Convert to Python
+            let py_batch = rust_record_batch_to_py(py, &batch);
+            assert!(py_batch.is_ok());
+
+            // Verify the Python object has the expected properties
+            let py_obj = py_batch.unwrap();
+            let num_rows: usize = py_obj.getattr(py, "num_rows").unwrap().extract(py).unwrap();
+            assert_eq!(num_rows, 3);
+        });
+    }
+
+    #[test]
+    fn test_record_batch_to_py_rows() {
+        pyo3::prepare_freethreaded_python();
+
+        Python::with_gil(|py| {
+            // Create a simple RecordBatch
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("name", DataType::Utf8, true),
+            ]));
+
+            let id_array = Int32Array::from(vec![1, 2]);
+            let name_array = StringArray::from(vec![Some("Alice"), Some("Bob")]);
+
+            let batch =
+                RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)])
+                    .unwrap();
+
+            // Convert to Python rows
+            let rows = record_batch_to_py_rows(py, &batch);
+            assert!(rows.is_ok());
+
+            let rows_vec = rows.unwrap();
+            assert_eq!(rows_vec.len(), 2);
+
+            // Verify first row
+            let row0 = rows_vec[0].bind(py);
+            assert_eq!(row0.len().unwrap(), 2);
+            let id0: i32 = row0.get_item(0).unwrap().extract().unwrap();
+            let name0: String = row0.get_item(1).unwrap().extract().unwrap();
+            assert_eq!(id0, 1);
+            assert_eq!(name0, "Alice");
+
+            // Verify second row
+            let row1 = rows_vec[1].bind(py);
+            let id1: i32 = row1.get_item(0).unwrap().extract().unwrap();
+            let name1: String = row1.get_item(1).unwrap().extract().unwrap();
+            assert_eq!(id1, 2);
+            assert_eq!(name1, "Bob");
+        });
+    }
+
+    #[test]
+    fn test_record_batch_to_py_rows_with_nulls() {
+        pyo3::prepare_freethreaded_python();
+
+        Python::with_gil(|py| {
+            // Create a RecordBatch with nulls
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("value", DataType::Float64, true),
+            ]));
+
+            let id_array = Int32Array::from(vec![1, 2]);
+            let value_array = Float64Array::from(vec![Some(1.5), None]);
+
+            let batch =
+                RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(value_array)])
+                    .unwrap();
+
+            // Convert to Python rows
+            let rows = record_batch_to_py_rows(py, &batch);
+            assert!(rows.is_ok());
+
+            let rows_vec = rows.unwrap();
+            assert_eq!(rows_vec.len(), 2);
+
+            // Verify second row has null value
+            let row1 = rows_vec[1].bind(py);
+            let value1 = row1.get_item(1).unwrap();
+            assert!(value1.is_none());
+        });
     }
 }

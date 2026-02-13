@@ -44,6 +44,30 @@ pub struct PartitionPlan {
     pub partitions: Vec<InputPartition>,
 }
 
+/// Result of writer setup, containing the pickled writer and its type.
+///
+/// The writer is pickled after calling `datasource.writer(schema, overwrite)`.
+/// Execution will deserialize and call `write(iterator)` on it.
+#[derive(Debug, Clone)]
+pub struct WriterPlan {
+    /// Pickled Python data source writer instance
+    pub pickled_writer: Vec<u8>,
+    /// Whether this is an Arrow-based writer (DataSourceArrowWriter)
+    /// If false, it's a Row-based writer (DataSourceWriter)
+    pub is_arrow: bool,
+}
+
+/// Result of a write operation from a single partition.
+///
+/// Contains the optional commit message returned by `writer.write(iterator)`.
+/// These messages are collected and passed to `writer.commit()` or `writer.abort()`.
+#[derive(Debug, Clone)]
+pub struct WriteResult {
+    /// Optional commit message from writer.write()
+    /// This is pickled bytes that will be unpickled in commit/abort
+    pub commit_message: Option<Vec<u8>>,
+}
+
 /// Abstract executor for Python datasource operations.
 ///
 /// This trait provides the abstraction layer between Sail's execution engine
@@ -80,6 +104,48 @@ pub trait PythonExecutor: Send + Sync + std::fmt::Debug {
         schema: SchemaRef,
         batch_size: usize,
     ) -> Result<BoxStream<'static, Result<RecordBatch>>>;
+
+    /// Get a writer for writing data to the Python datasource.
+    ///
+    /// Calls `DataSource.writer(schema, overwrite)` and returns a pickled writer.
+    /// Also performs isinstance checks to determine if it's Arrow or Row-based.
+    async fn get_writer(
+        &self,
+        command: &[u8],
+        schema: &SchemaRef,
+        overwrite: bool,
+    ) -> Result<WriterPlan>;
+
+    /// Execute a write operation for a set of RecordBatches.
+    ///
+    /// Calls `writer.write(iterator)` where iterator yields either:
+    /// - PyArrow RecordBatch objects (if is_arrow=true)
+    /// - PySpark Row tuples (if is_arrow=false)
+    ///
+    /// Returns the optional commit message from the write operation.
+    async fn execute_write(
+        &self,
+        pickled_writer: &[u8],
+        is_arrow: bool,
+        schema: SchemaRef,
+        batches: Vec<RecordBatch>,
+    ) -> Result<WriteResult>;
+
+    /// Commit a write operation.
+    ///
+    /// Calls `writer.commit(messages)` with all commit messages from partitions.
+    async fn commit_write(
+        &self,
+        pickled_writer: &[u8],
+        commit_messages: Vec<Vec<u8>>,
+    ) -> Result<()>;
+
+    /// Abort a write operation.
+    ///
+    /// Calls `writer.abort(messages)` with all commit messages from partitions.
+    /// Errors from abort are logged but not propagated (best-effort cleanup).
+    async fn abort_write(&self, pickled_writer: &[u8], commit_messages: Vec<Vec<u8>>)
+        -> Result<()>;
 }
 
 /// In-process executor using PyO3.
@@ -253,6 +319,248 @@ impl PythonExecutor for InProcessExecutor {
 
         Ok(Box::pin(stream))
     }
+
+    async fn get_writer(
+        &self,
+        command: &[u8],
+        schema: &SchemaRef,
+        overwrite: bool,
+    ) -> Result<WriterPlan> {
+        let command = command.to_vec();
+        let schema = schema.clone();
+
+        tokio::task::spawn_blocking(move || {
+            pyo3::Python::attach(|py| {
+                let datasource = deserialize_datasource(py, &command)?;
+
+                // Get datasource name for error context
+                let ds_name = datasource
+                    .call_method0("name")
+                    .and_then(|n| n.extract::<String>())
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+                let ctx = PythonDataSourceContext::new(&ds_name, "writer");
+
+                // Get writer with schema and overwrite mode
+                let schema_obj = super::arrow_utils::rust_schema_to_py(py, &schema)?;
+                let writer = datasource
+                    .call_method1("writer", (schema_obj, overwrite))
+                    .map_err(|e| ctx.wrap_py_error(e))?;
+
+                // Check if it's an Arrow-based writer or Row-based writer
+                // Import pyspark.sql.datasource module
+                let pyspark_ds = py.import("pyspark.sql.datasource").map_err(|e| {
+                    ctx.wrap_error(format!("Failed to import pyspark.sql.datasource: {}", e))
+                })?;
+
+                let arrow_writer_class =
+                    pyspark_ds.getattr("DataSourceArrowWriter").map_err(|e| {
+                        ctx.wrap_error(format!("Failed to get DataSourceArrowWriter class: {}", e))
+                    })?;
+
+                let is_arrow = writer
+                    .is_instance(&arrow_writer_class)
+                    .map_err(|e| ctx.wrap_error(format!("Failed to check isinstance: {}", e)))?;
+
+                // Pickle the writer
+                let pickled_writer = pickle_object(py, &writer)?;
+
+                log::debug!(
+                    "[{}::writer] Created {} writer, size: {} bytes",
+                    ds_name,
+                    if is_arrow { "Arrow" } else { "Row" },
+                    pickled_writer.len()
+                );
+
+                Ok(WriterPlan {
+                    pickled_writer,
+                    is_arrow,
+                })
+            })
+        })
+        .await
+        .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?
+    }
+
+    async fn execute_write(
+        &self,
+        pickled_writer: &[u8],
+        is_arrow: bool,
+        schema: SchemaRef,
+        batches: Vec<RecordBatch>,
+    ) -> Result<WriteResult> {
+        let pickled_writer = pickled_writer.to_vec();
+
+        tokio::task::spawn_blocking(move || {
+            pyo3::Python::attach(|py| {
+                // Deserialize the writer
+                let writer = deserialize_object(py, &pickled_writer)?;
+
+                // Get writer name for error context
+                let writer_name = writer
+                    .getattr("__class__")
+                    .and_then(|c| c.getattr("__name__"))
+                    .and_then(|n| n.extract::<String>())
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+                let ctx = PythonDataSourceContext::new(&writer_name, "write");
+
+                // Build Python iterator from batches
+                let py_iter = if is_arrow {
+                    // Arrow path: convert RecordBatches to PyArrow RecordBatches
+                    let py_batches: Vec<PyObject> = batches
+                        .iter()
+                        .map(|batch| super::arrow_utils::rust_record_batch_to_py(py, batch))
+                        .collect::<Result<_>>()?;
+
+                    // Create Python iterator from list
+                    let py_list = pyo3::types::PyList::new(py, py_batches).map_err(py_err)?;
+                    py_list.iter().map_err(py_err)?
+                } else {
+                    // Row path: convert RecordBatches to Row tuples
+                    let mut all_rows = Vec::new();
+                    for batch in &batches {
+                        let rows = super::arrow_utils::record_batch_to_py_rows(py, batch)?;
+                        all_rows.extend(rows);
+                    }
+
+                    // Create Python iterator from list
+                    let py_list = pyo3::types::PyList::new(py, all_rows).map_err(py_err)?;
+                    py_list.iter().map_err(py_err)?
+                };
+
+                // Call writer.write(iterator)
+                let commit_msg = writer
+                    .call_method1("write", (py_iter,))
+                    .map_err(|e| ctx.wrap_py_error(e))?;
+
+                // Pickle the commit message if not None
+                let commit_message = if commit_msg.is_none() {
+                    None
+                } else {
+                    Some(pickle_object(py, &commit_msg)?)
+                };
+
+                log::debug!(
+                    "[{}::write] Wrote {} batches, commit message: {} bytes",
+                    writer_name,
+                    batches.len(),
+                    commit_message.as_ref().map(|m| m.len()).unwrap_or(0)
+                );
+
+                Ok(WriteResult { commit_message })
+            })
+        })
+        .await
+        .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?
+    }
+
+    async fn commit_write(
+        &self,
+        pickled_writer: &[u8],
+        commit_messages: Vec<Vec<u8>>,
+    ) -> Result<()> {
+        let pickled_writer = pickled_writer.to_vec();
+
+        tokio::task::spawn_blocking(move || {
+            pyo3::Python::attach(|py| {
+                // Deserialize the writer
+                let writer = deserialize_object(py, &pickled_writer)?;
+
+                // Get writer name for error context
+                let writer_name = writer
+                    .getattr("__class__")
+                    .and_then(|c| c.getattr("__name__"))
+                    .and_then(|n| n.extract::<String>())
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+                let ctx = PythonDataSourceContext::new(&writer_name, "commit");
+
+                // Unpickle all commit messages
+                let py_messages: Vec<PyObject> = commit_messages
+                    .iter()
+                    .map(|msg| deserialize_object(py, msg))
+                    .collect::<Result<_>>()?;
+
+                // Create Python list of messages
+                let messages_list = pyo3::types::PyList::new(py, py_messages).map_err(py_err)?;
+
+                // Call writer.commit(messages)
+                writer
+                    .call_method1("commit", (messages_list,))
+                    .map_err(|e| ctx.wrap_py_error(e))?;
+
+                log::debug!(
+                    "[{}::commit] Committed {} partitions",
+                    writer_name,
+                    commit_messages.len()
+                );
+
+                Ok(())
+            })
+        })
+        .await
+        .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?
+    }
+
+    async fn abort_write(
+        &self,
+        pickled_writer: &[u8],
+        commit_messages: Vec<Vec<u8>>,
+    ) -> Result<()> {
+        let pickled_writer = pickled_writer.to_vec();
+
+        tokio::task::spawn_blocking(move || {
+            pyo3::Python::attach(|py| {
+                // Deserialize the writer
+                let writer = match deserialize_object(py, &pickled_writer) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        log::warn!("Failed to deserialize writer for abort: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                // Get writer name for logging
+                let writer_name = writer
+                    .getattr("__class__")
+                    .and_then(|c| c.getattr("__name__"))
+                    .and_then(|n| n.extract::<String>())
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+
+                // Unpickle all commit messages (best effort)
+                let py_messages: Vec<PyObject> = commit_messages
+                    .iter()
+                    .filter_map(|msg| deserialize_object(py, msg).ok())
+                    .collect();
+
+                // Create Python list of messages
+                let messages_list = match pyo3::types::PyList::new(py, py_messages) {
+                    Ok(list) => list,
+                    Err(e) => {
+                        log::warn!(
+                            "[{}::abort] Failed to create messages list: {}",
+                            writer_name,
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // Call writer.abort(messages) - log errors but don't propagate
+                if let Err(e) = writer.call_method1("abort", (messages_list,)) {
+                    log::warn!("[{}::abort] Abort call failed: {}", writer_name, e);
+                } else {
+                    log::debug!(
+                        "[{}::abort] Aborted {} partitions",
+                        writer_name,
+                        commit_messages.len()
+                    );
+                }
+
+                Ok(())
+            })
+        })
+        .await
+        .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?
+    }
 }
 
 /// Deserialize a pickled Python datasource.
@@ -264,6 +572,21 @@ fn deserialize_datasource<'py>(
 
     let cloudpickle = import_cloudpickle(py)?;
     let py_bytes = PyBytes::new(py, command);
+
+    cloudpickle
+        .call_method1("loads", (py_bytes,))
+        .map_err(py_err)
+}
+
+/// Deserialize a pickled Python object (generic version).
+fn deserialize_object<'py>(
+    py: pyo3::Python<'py>,
+    pickled: &[u8],
+) -> Result<pyo3::Bound<'py, pyo3::PyAny>> {
+    use pyo3::types::PyBytes;
+
+    let cloudpickle = import_cloudpickle(py)?;
+    let py_bytes = PyBytes::new(py, pickled);
 
     cloudpickle
         .call_method1("loads", (py_bytes,))

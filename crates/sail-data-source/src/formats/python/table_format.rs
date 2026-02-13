@@ -193,12 +193,45 @@ impl TableFormat for PythonTableFormat {
     async fn create_writer(
         &self,
         _ctx: &dyn Session,
-        _info: SinkInfo,
+        info: SinkInfo,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        not_impl_err!(
-            "Write operations are not yet supported for Python datasource '{}'. Coming in PR #2.",
-            self.name
-        )
+        use sail_common_datafusion::datasource::PhysicalSinkMode;
+
+        let SinkInfo {
+            input,
+            mode,
+            partition_by,
+            options,
+            ..
+        } = info;
+
+        // Warn about unsupported partitionBy (PySpark compat: silently ignored)
+        if !partition_by.is_empty() {
+            log::warn!(
+                "partitionBy is not supported for Python datasource '{}' and will be ignored. \
+                 Handle partitioning in your DataSourceWriter.write() method.",
+                self.name
+            );
+        }
+
+        // Map save mode to overwrite bool (PySpark convention)
+        let overwrite = matches!(mode, PhysicalSinkMode::Overwrite);
+
+        // Create datasource and get writer
+        let datasource = self.create_datasource(&options)?;
+        let executor: Arc<dyn super::executor::PythonExecutor> = Arc::new(InProcessExecutor::new());
+        let schema = input.schema();
+
+        let writer_plan = executor
+            .get_writer(datasource.command(), &schema, overwrite)
+            .await?;
+
+        Ok(Arc::new(super::write_exec::PythonDataSourceWriteExec::new(
+            input,
+            writer_plan.pickled_writer,
+            schema,
+            writer_plan.is_arrow,
+        )))
     }
 }
 
