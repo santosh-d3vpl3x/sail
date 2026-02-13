@@ -28,7 +28,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion_common::{exec_err, internal_err, Result};
 use futures::stream::StreamExt;
 
-use super::executor::InProcessExecutor;
+use super::executor::{InProcessExecutor, PythonExecutor};
 
 /// Execution plan for writing to a Python datasource.
 ///
@@ -224,9 +224,11 @@ impl ExecutionPlan for PythonDataSourceWriteExec {
                 let _ = executor.abort_write(&pickled_writer, commit_messages).await;
 
                 // Return the first error we encountered
-                return Err(first_error.unwrap_or_else(|| {
-                    exec_err!("Write operation failed but no error was captured").unwrap_err()
-                }));
+                if let Some(err) = first_error {
+                    return Err(err);
+                } else {
+                    return exec_err!("Write operation failed but no error was captured");
+                }
             } else {
                 // All writes succeeded, commit
                 executor

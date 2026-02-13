@@ -403,17 +403,16 @@ impl PythonExecutor for InProcessExecutor {
                     .unwrap_or_else(|_| "<unknown>".to_string());
                 let ctx = PythonDataSourceContext::new(&writer_name, "write");
 
-                // Build Python iterator from batches
-                let py_iter = if is_arrow {
+                // Build Python list from batches
+                let py_list = if is_arrow {
                     // Arrow path: convert RecordBatches to PyArrow RecordBatches
                     let py_batches: Vec<PyObject> = batches
                         .iter()
                         .map(|batch| super::arrow_utils::rust_record_batch_to_py(py, batch))
                         .collect::<Result<_>>()?;
 
-                    // Create Python iterator from list
-                    let py_list = pyo3::types::PyList::new(py, py_batches).map_err(py_err)?;
-                    py_list.iter().map_err(py_err)?
+                    // Create Python list
+                    pyo3::types::PyList::new(py, py_batches).map_err(py_err)?
                 } else {
                     // Row path: convert RecordBatches to Row tuples
                     let mut all_rows = Vec::new();
@@ -422,14 +421,13 @@ impl PythonExecutor for InProcessExecutor {
                         all_rows.extend(rows);
                     }
 
-                    // Create Python iterator from list
-                    let py_list = pyo3::types::PyList::new(py, all_rows).map_err(py_err)?;
-                    py_list.iter().map_err(py_err)?
+                    // Create Python list
+                    pyo3::types::PyList::new(py, all_rows).map_err(py_err)?
                 };
 
-                // Call writer.write(iterator)
+                // Call writer.write(iterator) - pass the list, Python will iterate over it
                 let commit_msg = writer
-                    .call_method1("write", (py_iter,))
+                    .call_method1("write", (py_list,))
                     .map_err(|e| ctx.wrap_py_error(e))?;
 
                 // Pickle the commit message if not None
@@ -476,7 +474,7 @@ impl PythonExecutor for InProcessExecutor {
                 // Unpickle all commit messages
                 let py_messages: Vec<PyObject> = commit_messages
                     .iter()
-                    .map(|msg| deserialize_object(py, msg))
+                    .map(|msg| deserialize_object(py, msg).map(|obj| obj.unbind()))
                     .collect::<Result<_>>()?;
 
                 // Create Python list of messages
@@ -528,7 +526,7 @@ impl PythonExecutor for InProcessExecutor {
                 // Unpickle all commit messages (best effort)
                 let py_messages: Vec<PyObject> = commit_messages
                     .iter()
-                    .filter_map(|msg| deserialize_object(py, msg).ok())
+                    .filter_map(|msg| deserialize_object(py, msg).ok().map(|obj| obj.unbind()))
                     .collect();
 
                 // Create Python list of messages

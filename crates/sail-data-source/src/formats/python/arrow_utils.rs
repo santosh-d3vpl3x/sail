@@ -79,12 +79,15 @@ pub fn py_schema_to_rust(_py: Python<'_>, py_schema: &Bound<'_, PyAny>) -> Resul
 pub fn rust_record_batch_to_py(py: Python<'_>, batch: &RecordBatch) -> Result<PyObject> {
     use arrow_pyarrow::ToPyArrow;
 
-    batch.to_pyarrow(py).map_err(|e| {
-        DataFusionError::External(Box::new(std::io::Error::other(format!(
-            "Failed to convert RecordBatch to PyArrow: {}",
-            e
-        ))))
-    })
+    batch
+        .to_pyarrow(py)
+        .map(|bound| bound.unbind())
+        .map_err(|e| {
+            DataFusionError::External(Box::new(std::io::Error::other(format!(
+                "Failed to convert RecordBatch to PyArrow: {}",
+                e
+            ))))
+        })
 }
 
 /// Convert a Rust Arrow RecordBatch to Python Row objects.
@@ -118,6 +121,7 @@ pub fn record_batch_to_py_rows(py: Python<'_>, batch: &RecordBatch) -> Result<Ve
 /// Extract a Python value from an Arrow array at a given index.
 fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Result<PyObject> {
     use arrow::array::Array;
+    use pyo3::IntoPyObject;
 
     if array.is_null(row_idx) {
         return Ok(py.None());
@@ -132,19 +136,37 @@ fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Res
                 .ok_or_else(|| {
                     DataFusionError::Execution("Failed to downcast to BooleanArray".to_string())
                 })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Int32 => {
             let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
                 DataFusionError::Execution("Failed to downcast to Int32Array".to_string())
             })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Int64 => {
             let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
                 DataFusionError::Execution("Failed to downcast to Int64Array".to_string())
             })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Float32 => {
             let arr = array
@@ -153,7 +175,13 @@ fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Res
                 .ok_or_else(|| {
                     DataFusionError::Execution("Failed to downcast to Float32Array".to_string())
                 })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Float64 => {
             let arr = array
@@ -162,7 +190,13 @@ fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Res
                 .ok_or_else(|| {
                     DataFusionError::Execution("Failed to downcast to Float64Array".to_string())
                 })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Utf8 => {
             let arr = array
@@ -171,7 +205,13 @@ fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Res
                 .ok_or_else(|| {
                     DataFusionError::Execution("Failed to downcast to StringArray".to_string())
                 })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Date32 => {
             let arr = array
@@ -180,7 +220,13 @@ fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Res
                 .ok_or_else(|| {
                     DataFusionError::Execution("Failed to downcast to Date32Array".to_string())
                 })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             let arr = array
@@ -191,7 +237,13 @@ fn extract_python_value(py: Python<'_>, array: &ArrayRef, row_idx: usize) -> Res
                         "Failed to downcast to TimestampMicrosecondArray".to_string(),
                     )
                 })?;
-            Ok(arr.value(row_idx).into_py(py))
+            Ok(arr
+                .value(row_idx)
+                .into_pyobject(py)
+                .unwrap()
+                .to_owned()
+                .into_any()
+                .unbind())
         }
         other => Err(DataFusionError::NotImplemented(format!(
             "Data type {:?} not supported in MVP. Available in later PRs.",
