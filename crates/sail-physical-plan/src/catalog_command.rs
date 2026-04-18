@@ -1,15 +1,18 @@
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use datafusion_common::{exec_err, internal_err, Result};
+use datafusion_common::{exec_datafusion_err, exec_err, internal_err, Result};
 use sail_catalog::command::CatalogCommand;
 use sail_catalog::manager::CatalogManager;
+use sail_catalog::provider::CreateTableOptions;
+use sail_common_datafusion::datasource::{is_lakehouse_format, TableFormatRegistry, TableInitInfo};
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 /// A physical plan node that executes a [`CatalogCommand`].
@@ -91,14 +94,134 @@ impl ExecutionPlan for CatalogCommandExec {
         }
         let command = self.command.clone();
         let schema = self.schema.clone();
+
+        // Build the storage-init payload up front for CREATE TABLE so we don't
+        // have to clone the entire `CreateTableOptions` across the `execute()`
+        // call — only the data we actually need.
+        let init_payload = match &command {
+            CatalogCommand::CreateTable { options, .. } => {
+                TableInitPayload::try_from_options(options)
+            }
+            _ => None,
+        };
+
         let stream = futures::stream::once(async move {
+            // Write the transaction log first, then register the table in
+            // the catalog. If log initialization fails, we never touch the
+            // catalog — this avoids orphaned catalog entries. If catalog
+            // registration fails afterwards, the table is still path-
+            // readable, matching the Java reference implementation's
+            // `commitDeltaLog -> updateCatalog` ordering.
+            if let Some(payload) = init_payload {
+                initialize_lakehouse_table(context.as_ref(), payload).await?;
+            }
+
             let manager = context.extension::<CatalogManager>()?;
             let batch = command
                 .execute(context.as_ref(), manager.as_ref())
                 .await
-                .map_err(|e| datafusion_common::exec_datafusion_err!("{e}"))?;
+                .map_err(|e| exec_datafusion_err!("{e}"))?;
+
             Ok(batch)
         });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
+}
+
+/// Minimal, already-materialized payload carried from the synchronous `execute`
+/// call into the async stream. Avoids cloning the full `CreateTableOptions`.
+struct TableInitPayload {
+    format: String,
+    location: String,
+    schema: SchemaRef,
+    partition_columns: Vec<String>,
+    configuration: HashMap<String, String>,
+    comment: Option<String>,
+    if_not_exists: bool,
+    replace: bool,
+}
+
+impl TableInitPayload {
+    /// Returns `Some(payload)` if this CREATE TABLE needs format-specific
+    /// storage initialization (i.e. lakehouse format and explicit `LOCATION`),
+    /// or `None` otherwise.
+    fn try_from_options(options: &CreateTableOptions) -> Option<Self> {
+        if !is_lakehouse_format(&options.format) {
+            return None;
+        }
+        let location = options.location.as_ref()?.clone();
+
+        let fields: Vec<Field> = options
+            .columns
+            .iter()
+            .map(|col| Field::new(&col.name, col.data_type.clone(), col.nullable))
+            .collect();
+        let schema: SchemaRef = Arc::new(Schema::new(fields));
+
+        let partition_columns = options
+            .partition_by
+            .iter()
+            .map(|p| p.column.clone())
+            .collect();
+
+        // Both `TBLPROPERTIES` (options.properties) and `OPTIONS (...)` entries
+        // (options.options) may carry format-level configuration; pass both through
+        // so the format can route / canonicalize them itself.
+        let mut configuration: HashMap<String, String> =
+            options.properties.iter().cloned().collect();
+        for (key, value) in &options.options {
+            configuration
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+
+        Some(Self {
+            format: options.format.clone(),
+            location,
+            schema,
+            partition_columns,
+            configuration,
+            comment: options.comment.clone(),
+            if_not_exists: options.if_not_exists,
+            replace: options.replace,
+        })
+    }
+}
+
+/// Run any format-specific storage initialization after catalog registration.
+/// Formats that do not override `initialize_table` will use the default no-op implementation.
+async fn initialize_lakehouse_table(
+    context: &TaskContext,
+    payload: TableInitPayload,
+) -> Result<()> {
+    let TableInitPayload {
+        format,
+        location,
+        schema,
+        partition_columns,
+        configuration,
+        comment,
+        if_not_exists,
+        replace,
+    } = payload;
+
+    let registry = context.extension::<TableFormatRegistry>()?;
+    let table_format = registry.get(&format)?;
+
+    let init_info = TableInitInfo {
+        location,
+        schema,
+        partition_columns,
+        configuration,
+        comment,
+        if_not_exists,
+        replace,
+    };
+
+    table_format
+        .initialize_table(context.runtime_env(), init_info)
+        .await
+        .map_err(|e| exec_datafusion_err!("Failed to initialize table storage: {e}"))?;
+
+    Ok(())
 }

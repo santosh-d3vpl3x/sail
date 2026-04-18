@@ -225,7 +225,7 @@ pub(crate) async fn create_delta_table_with_object_store(
     Ok(table)
 }
 
-fn create_logstore_with_object_store(
+pub fn create_logstore_with_object_store(
     object_store: Arc<dyn ObjectStore>,
     location: Url,
     storage_config: StorageConfig,

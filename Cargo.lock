@@ -6907,6 +6907,7 @@ dependencies = [
  "serde",
  "serde_arrow",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "url",

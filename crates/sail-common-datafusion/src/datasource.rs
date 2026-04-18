@@ -3,10 +3,11 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datafusion::arrow::datatypes::{DataType, Schema};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::plan_datafusion_err;
 use datafusion::datasource::provider_as_source;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_expr::{
     create_physical_sort_exprs, LexOrdering, LexRequirement, PhysicalSortRequirement,
 };
@@ -87,6 +88,29 @@ pub enum MergeStrategy {
     #[default]
     Eager,
     MergeOnRead,
+}
+
+/// Information required to initialize a newly created table's storage.
+/// Used by formats like Delta Lake that require initial log commits.
+#[derive(Debug, Clone)]
+pub struct TableInitInfo {
+    /// The storage location of the table.
+    pub location: String,
+    /// The schema of the table.
+    pub schema: SchemaRef,
+    /// Partition column names.
+    pub partition_columns: Vec<String>,
+    /// Table configuration/properties.
+    pub configuration: HashMap<String, String>,
+    /// Optional table comment.
+    pub comment: Option<String>,
+    /// Whether the DDL used `IF NOT EXISTS`. When true and the storage is already
+    /// initialized, the format must silently no-op instead of erroring.
+    pub if_not_exists: bool,
+    /// Whether the DDL used `CREATE OR REPLACE`. When true, the format should
+    /// replace any existing storage (or return an explicit not-implemented error
+    /// if it does not yet support replace).
+    pub replace: bool,
 }
 
 /// Returns true for lakehouse formats that support row-level modifications.
@@ -320,6 +344,18 @@ pub trait TableFormat: Send + Sync {
     /// Defaults to [`MergeStrategy::Eager`]. Override for Merge-on-Read formats.
     fn merge_strategy(&self) -> MergeStrategy {
         MergeStrategy::Eager
+    }
+
+    /// Initializes storage for a newly created table.
+    ///
+    /// Called after a table is registered in the catalog via DDL (CREATE TABLE).
+    /// Formats like Delta Lake need this to create the initial transaction log,
+    /// making the empty table immediately readable.
+    ///
+    /// Default implementation is a no-op for formats that don't require initialization.
+    async fn initialize_table(&self, runtime: Arc<RuntimeEnv>, info: TableInitInfo) -> Result<()> {
+        let _ = (runtime, info);
+        Ok(())
     }
 }
 
