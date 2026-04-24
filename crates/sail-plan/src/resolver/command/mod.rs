@@ -165,6 +165,15 @@ impl PlanResolver<'_> {
             CommandNode::RecoverPartitions { .. } => {
                 Err(PlanError::todo("PlanNode::RecoverPartitions"))
             }
+            CommandNode::ShowPartitions { table, spec } => {
+                let spec = spec
+                    .map(Self::resolve_partition_spec)
+                    .transpose()?;
+                self.resolve_catalog_command(CatalogCommand::ShowPartitions {
+                    table: table.into(),
+                    spec,
+                })
+            }
             CommandNode::IsCached { .. } => Err(PlanError::todo("PlanNode::IsCached")),
             CommandNode::CacheTable { .. } => Err(PlanError::todo("PlanNode::CacheTable")),
             CommandNode::UncacheTable { .. } => Err(PlanError::todo("PlanNode::UncacheTable")),

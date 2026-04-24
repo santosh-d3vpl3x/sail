@@ -309,7 +309,7 @@ impl CatalogProvider for MemoryCatalogProvider {
             .get_mut(table)
             .ok_or_else(|| CatalogError::NotFound(CatalogObject::Table, table.to_string()))?;
         match &mut status.kind {
-            TableKind::Table { properties, .. } => match options {
+            TableKind::Table { properties, columns, .. } => match options {
                 AlterTableOptions::SetTableProperties {
                     properties: new_props,
                 } => {
@@ -335,6 +335,27 @@ impl CatalogProvider for MemoryCatalogProvider {
                     }
                     Ok(())
                 }
+                AlterTableOptions::AddColumns {
+                    columns: new_columns,
+                } => {
+                    for col in new_columns {
+                        columns.push(TableColumnStatus {
+                            name: col.name,
+                            data_type: col.data_type,
+                            nullable: col.nullable,
+                            comment: col.comment,
+                            default: col.default,
+                            generated_always_as: col.generated_always_as,
+                            is_partition: false,
+                            is_bucket: false,
+                            is_cluster: false,
+                        });
+                    }
+                    Ok(())
+                }
+                AlterTableOptions::RenameTable { .. } => Err(CatalogError::NotSupported(
+                    "rename table in memory catalog".to_string(),
+                )),
             },
             _ => Err(CatalogError::NotSupported(
                 "ALTER TABLE is not supported for views".to_string(),

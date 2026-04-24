@@ -13,9 +13,9 @@ use pilota::{AHashMap, FastStr};
 use sail_catalog::error::{CatalogError, CatalogObject, CatalogResult};
 use sail_catalog::hive_format::HiveCatalogFormat;
 use sail_catalog::provider::{
-    AlterTableOptions, CatalogProvider, CreateDatabaseOptions, CreateTableOptions,
-    CreateViewOptions, DropDatabaseOptions, DropTableOptions, DropViewOptions, Namespace,
-    PartitionTransform,
+    AddPartitionOptions, AlterTableOptions, CatalogProvider, CreateDatabaseOptions,
+    CreateTableOptions, CreateViewOptions, DropDatabaseOptions, DropPartitionOptions,
+    DropTableOptions, DropViewOptions, Namespace, PartitionStatus, PartitionTransform,
 };
 use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::catalog::{DatabaseStatus, TableStatus};
@@ -23,8 +23,8 @@ use tokio::sync::Mutex;
 use volo_thrift::MaybeException;
 
 use crate::convert::{
-    build_database, build_generic_table, build_view, database_to_status, is_view_table,
-    table_to_status, validate_namespace, view_to_status, GenericTableFormat,
+    build_database, build_generic_table, build_view, column_to_field_schema, database_to_status,
+    is_view_table, table_to_status, validate_namespace, view_to_status, GenericTableFormat,
 };
 use crate::security::{KerberosMakeTransport, SaslQop};
 
@@ -65,14 +65,14 @@ enum CatalogAuthMode {
 }
 
 #[derive(Debug)]
-struct DropTableRequest {
+struct DropRequest {
     delete_data: bool,
     environment_context: Option<EnvironmentContext>,
 }
 
 const HMS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn build_drop_table_request(purge: bool) -> DropTableRequest {
+fn build_drop_request(purge: bool) -> DropRequest {
     let environment_context = purge.then(|| EnvironmentContext {
         properties: Some(AHashMap::from_iter([(
             FastStr::from_static_str("ifPurge"),
@@ -80,7 +80,7 @@ fn build_drop_table_request(purge: bool) -> DropTableRequest {
         )])),
     });
 
-    DropTableRequest {
+    DropRequest {
         delete_data: true,
         environment_context,
     }
@@ -941,7 +941,7 @@ impl CatalogProvider for HmsCatalogProvider {
     ) -> CatalogResult<()> {
         let db_name = validate_namespace(database)?;
 
-        let request = build_drop_table_request(options.purge);
+        let request = build_drop_request(options.purge);
         match request.environment_context {
             Some(environment_context) => {
                 self.drop_hms_table_with_environment_context(
@@ -1023,6 +1023,16 @@ impl CatalogProvider for HmsCatalogProvider {
                             }
                         }
                     }
+                    AlterTableOptions::RenameTable { new_name } => {
+                        hms_table.table_name = Some(FastStr::from_string(new_name));
+                    }
+                    AlterTableOptions::AddColumns { columns } => {
+                        let sd = hms_table.sd.get_or_insert_with(Default::default);
+                        let cols = sd.cols.get_or_insert_with(Vec::new);
+                        for column in columns {
+                            cols.push(column_to_field_schema(column)?);
+                        }
+                    }
                 }
 
                 match client
@@ -1062,16 +1072,24 @@ impl CatalogProvider for HmsCatalogProvider {
         view: &str,
         options: CreateViewOptions,
     ) -> CatalogResult<TableStatus> {
-        if options.replace {
-            return Err(CatalogError::NotSupported(
-                "Hive Metastore catalog does not support REPLACE for views".to_string(),
-            ));
+        let db_name = validate_namespace(database)?;
+        let replace = options.replace;
+        let if_not_exists = options.if_not_exists;
+        let view_name = view.to_string();
+
+        // If REPLACE is requested, drop the existing view first (ignoring NotFound).
+        // This mirrors Spark's HiveExternalCatalog behavior.
+        if replace {
+            let _ = self
+                .drop_view(
+                    database,
+                    view,
+                    DropViewOptions { if_exists: true },
+                )
+                .await;
         }
 
-        let db_name = validate_namespace(database)?;
-        let if_not_exists = options.if_not_exists;
         let table = build_view(&db_name, view, options)?;
-        let view_name = view.to_string();
 
         self.with_failover_attempt(|client, attempt| {
             let table = table.clone();
@@ -1143,6 +1161,282 @@ impl CatalogProvider for HmsCatalogProvider {
             CatalogError::NotFound(_, value) => CatalogError::NotFound(CatalogObject::View, value),
             other => other,
         })
+    }
+
+    async fn add_partitions(
+        &self,
+        database: &Namespace,
+        table: &str,
+        partitions: Vec<AddPartitionOptions>,
+        if_not_exists: bool,
+    ) -> CatalogResult<()> {
+        let db_name = validate_namespace(database)?;
+        let table_name = table.to_string();
+
+        let hms_table = self.fetch_hms_table(database, table).await?;
+        let partition_keys = hms_table.partition_keys.unwrap_or_default();
+        if partition_keys.is_empty() {
+            return Err(CatalogError::InvalidArgument(format!(
+                "Table {db_name}.{table_name} is not partitioned"
+            )));
+        }
+
+        let mut new_parts = Vec::with_capacity(partitions.len());
+        for opt in partitions {
+            let mut values = Vec::with_capacity(partition_keys.len());
+            for key in &partition_keys {
+                let key_name = key.name.as_ref().map(|s| s.as_str()).unwrap_or_default();
+                let val = opt
+                    .spec
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key_name))
+                    .map(|(_, v)| v.clone())
+                    .ok_or_else(|| {
+                        CatalogError::InvalidArgument(format!(
+                            "Missing value for partition key: {key_name}"
+                        ))
+                    })?;
+                values.push(val.into());
+            }
+
+            let mut sd = hms_table.sd.clone();
+            if let Some(location) = opt.location {
+                if let Some(sd) = &mut sd {
+                    sd.location = Some(location.into());
+                }
+            }
+
+            new_parts.push(hive_metastore::Partition {
+                values: Some(values),
+                db_name: Some(db_name.clone().into()),
+                table_name: Some(table_name.clone().into()),
+                create_time: None,
+                last_access_time: None,
+                sd,
+                parameters: None,
+                privileges: None,
+                cat_name: None,
+            });
+        }
+
+        self.with_failover(|client| {
+            let new_parts = new_parts.clone();
+            let db_name = db_name.clone();
+            let table_name = table_name.clone();
+            async move {
+                match client.add_partitions(new_parts).await {
+                    Ok(MaybeException::Ok(_)) => Ok(()),
+                    Ok(MaybeException::Exception(err)) => {
+                        let err_msg = format!("{err:?}");
+                        if if_not_exists && err_msg.contains("AlreadyExistsException") {
+                            Ok(())
+                        } else {
+                            Err(CatalogError::External(format!(
+                                "Failed to add partitions to HMS table '{db_name}.{table_name}': {err_msg}"
+                            )))
+                        }
+                    }
+                    Err(err) => Err(CatalogError::External(format!(
+                        "Failed to add partitions to HMS table '{db_name}.{table_name}': {err:?}"
+                    ))),
+                }
+            }
+        })
+        .await
+    }
+
+    async fn drop_partition(
+        &self,
+        database: &Namespace,
+        table: &str,
+        options: DropPartitionOptions,
+    ) -> CatalogResult<()> {
+        let db_name = validate_namespace(database)?;
+        let table_name = table.to_string();
+
+        let hms_table = self.fetch_hms_table(database, table).await?;
+        let partition_keys = hms_table.partition_keys.unwrap_or_default();
+        if partition_keys.is_empty() {
+            return Err(CatalogError::InvalidArgument(format!(
+                "Table {db_name}.{table_name} is not partitioned"
+            )));
+        }
+
+        let mut values = Vec::with_capacity(partition_keys.len());
+        for key in &partition_keys {
+            let key_name = key.name.as_ref().map(|s| s.as_str()).unwrap_or_default();
+            let val = options
+                .spec
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key_name))
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| {
+                    CatalogError::InvalidArgument(format!(
+                        "Missing value for partition key: {key_name}"
+                    ))
+                })?;
+            values.push(val.into());
+        }
+
+        let request = build_drop_request(options.purge);
+
+        self.with_failover(|client| {
+            let db_name = db_name.clone();
+            let table_name = table_name.clone();
+            let values = values.clone();
+            let if_exists = options.if_exists;
+            let delete_data = request.delete_data;
+            let environment_context = request.environment_context.clone();
+            async move {
+                let result = match environment_context {
+                    Some(ctx) => {
+                        client
+                            .drop_partition_with_environment_context(
+                                db_name.clone().into(),
+                                table_name.clone().into(),
+                                values.clone(),
+                                delete_data,
+                                ctx,
+                            )
+                            .await
+                            .map_err(|e| format!("{e:?}"))
+                            .and_then(|r| match r {
+                                MaybeException::Ok(_) => Ok(()),
+                                MaybeException::Exception(err) => Err(format!("{err:?}")),
+                            })
+                    }
+                    None => {
+                        client
+                            .drop_partition(
+                                db_name.clone().into(),
+                                table_name.clone().into(),
+                                values.clone(),
+                                delete_data,
+                            )
+                            .await
+                            .map_err(|e| format!("{e:?}"))
+                            .and_then(|r| match r {
+                                MaybeException::Ok(_) => Ok(()),
+                                MaybeException::Exception(err) => Err(format!("{err:?}")),
+                            })
+                    }
+                };
+
+                match result {
+                    Ok(()) => Ok(()),
+                    Err(err_msg) => {
+                        if if_exists && err_msg.contains("NoSuchObjectException") {
+                            Ok(())
+                        } else {
+                            Err(CatalogError::External(format!(
+                                "Failed to drop partition from HMS table '{db_name}.{table_name}': {err_msg}"
+                            )))
+                        }
+                    }
+                }
+            }
+        })
+        .await
+    }
+
+    async fn list_partitions(
+        &self,
+        database: &Namespace,
+        table: &str,
+        spec: Option<Vec<(String, String)>>,
+    ) -> CatalogResult<Vec<PartitionStatus>> {
+        let db_name = validate_namespace(database)?;
+        let table_name = table.to_string();
+
+        let hms_table = self.fetch_hms_table(database, table).await?;
+        let partition_keys = hms_table.partition_keys.unwrap_or_default();
+        if partition_keys.is_empty() {
+            return Err(CatalogError::InvalidArgument(format!(
+                "Table {db_name}.{table_name} is not partitioned"
+            )));
+        }
+
+        let names = self
+            .with_failover(|client| {
+                let db_name = db_name.clone();
+                let table_name = table_name.clone();
+                let spec = spec.clone();
+                let partition_keys = partition_keys.clone();
+                async move {
+                    if let Some(spec) = spec {
+                        let mut values = Vec::with_capacity(partition_keys.len());
+                        // partial spec values up to the defined keys
+                        for key in &partition_keys {
+                            let key_name = key.name.as_ref().map(|s| s.as_str()).unwrap_or_default();
+                            if let Some((_, v)) = spec
+                                .iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case(key_name))
+                            {
+                                values.push(v.clone().into());
+                            } else {
+                                break;
+                            }
+                        }
+                        if values.len() != spec.len() {
+                            return Err(CatalogError::InvalidArgument(
+                                "Invalid partial partition spec".to_string(),
+                            ));
+                        }
+                        match client
+                            .get_partition_names_ps(
+                                db_name.clone().into(),
+                                table_name.clone().into(),
+                                values,
+                                -1,
+                            )
+                            .await
+                        {
+                            Ok(MaybeException::Ok(names)) => Ok(names),
+                            Ok(MaybeException::Exception(err)) => {
+                                Err(CatalogError::External(format!(
+                                    "Failed to list partitions for HMS table '{db_name}.{table_name}': {err:?}"
+                                )))
+                            }
+                            Err(err) => Err(CatalogError::External(format!(
+                                "Failed to list partitions for HMS table '{db_name}.{table_name}': {err:?}"
+                            ))),
+                        }
+                    } else {
+                        match client
+                            .get_partition_names(db_name.clone().into(), table_name.clone().into(), -1)
+                            .await
+                        {
+                            Ok(MaybeException::Ok(names)) => Ok(names),
+                            Ok(MaybeException::Exception(err)) => {
+                                Err(CatalogError::External(format!(
+                                    "Failed to list partitions for HMS table '{db_name}.{table_name}': {err:?}"
+                                )))
+                            }
+                            Err(err) => Err(CatalogError::External(format!(
+                                "Failed to list partitions for HMS table '{db_name}.{table_name}': {err:?}"
+                            ))),
+                        }
+                    }
+                }
+            })
+            .await?;
+
+        // Parse names like "key1=val1/key2=val2"
+        let mut results = Vec::with_capacity(names.len());
+        for name in names {
+            let name_str = name.as_str();
+            let mut spec = Vec::new();
+            for part in name_str.split('/') {
+                if let Some((k, v)) = part.split_once('=') {
+                    spec.push((k.to_string(), v.to_string()));
+                }
+            }
+            results.push(PartitionStatus {
+                spec,
+                location: None, // Location not fetched to avoid overhead, similar to Spark's showPartitions
+            });
+        }
+        Ok(results)
     }
 }
 
@@ -1216,17 +1510,15 @@ mod tests {
     }
 
     #[test]
-    fn test_build_drop_table_request_without_purge_keeps_delete_data_enabled() {
-        let request = super::build_drop_table_request(false);
-
+    fn test_build_drop_request_without_purge_keeps_delete_data_enabled() {
+        let request = super::build_drop_request(false);
         assert!(request.delete_data);
         assert!(request.environment_context.is_none());
     }
 
     #[test]
-    fn test_build_drop_table_request_with_purge_sets_if_purge_context() {
-        let request = super::build_drop_table_request(true);
-
+    fn test_build_drop_request_with_purge_sets_if_purge_context() {
+        let request = super::build_drop_request(true);
         assert!(request.delete_data);
         let properties = request
             .environment_context

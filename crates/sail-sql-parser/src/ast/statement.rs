@@ -146,6 +146,13 @@ pub enum Statement {
         name: ObjectName,
         as_serde: Option<(As, Serde)>,
     },
+    ShowPartitions {
+        show: Show,
+        partitions: Partitions,
+        name: ObjectName,
+        #[parser(function = |(_, _, e, _), o| compose(e, o))]
+        partition: Option<PartitionClause>,
+    },
     ShowColumns {
         show: Show,
         columns: Columns,

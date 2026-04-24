@@ -10,9 +10,9 @@ use crate::error::{CatalogError, CatalogResult};
 use crate::manager::tracker::{CatalogFunctionId, CatalogLogicalPlanId};
 use crate::manager::CatalogManager;
 use crate::provider::{
-    AlterTableOptions, CreateDatabaseOptions, CreateTableOptions, CreateTemporaryViewOptions,
-    CreateViewOptions, DropDatabaseOptions, DropTableOptions, DropTemporaryViewOptions,
-    DropViewOptions,
+    AddPartitionOptions, AlterTableOptions, CreateDatabaseOptions, CreateTableOptions,
+    CreateTemporaryViewOptions, CreateViewOptions, DropDatabaseOptions, DropPartitionOptions,
+    DropTableOptions, DropTemporaryViewOptions, DropViewOptions,
 };
 use crate::utils::{quote_names_if_needed, quote_namespace_if_needed};
 
@@ -131,6 +131,19 @@ pub enum CatalogCommand {
         table: Vec<String>,
         extended: bool,
     },
+    AddPartitions {
+        table: Vec<String>,
+        partitions: Vec<AddPartitionOptions>,
+        if_not_exists: bool,
+    },
+    DropPartition {
+        table: Vec<String>,
+        options: DropPartitionOptions,
+    },
+    ShowPartitions {
+        table: Vec<String>,
+        spec: Option<Vec<(String, String)>>,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Serialize, Deserialize)]
@@ -173,6 +186,9 @@ impl CatalogCommand {
             CatalogCommand::CreateTemporaryView { .. } => "CreateTemporaryView",
             CatalogCommand::CreateView { .. } => "CreateView",
             CatalogCommand::DescribeTable { .. } => "DescribeTable",
+            CatalogCommand::AddPartitions { .. } => "AddPartitions",
+            CatalogCommand::DropPartition { .. } => "DropPartition",
+            CatalogCommand::ShowPartitions { .. } => "ShowPartitions",
         }
     }
 
@@ -219,7 +235,12 @@ impl CatalogCommand {
             | CatalogCommand::AlterTable { .. }
             | CatalogCommand::DropFunction { .. }
             | CatalogCommand::DropTemporaryView { .. }
-            | CatalogCommand::DropView { .. } => display.bools().schema()?,
+            | CatalogCommand::DropView { .. }
+            | CatalogCommand::AddPartitions { .. }
+            | CatalogCommand::DropPartition { .. } => display.bools().schema()?,
+            CatalogCommand::ShowPartitions { .. } => {
+                ArrowSerializer::default().schema::<ShowPartitionsRow>()?
+            }
         };
         Ok(schema)
     }
@@ -410,6 +431,10 @@ impl CatalogCommand {
                             keys.iter().map(|k| (k.clone(), None)).collect::<Vec<_>>(),
                             *if_exists,
                         ),
+                        // RenameTable and AddColumns are catalog-only operations;
+                        // they do not require storage-level commits.
+                        AlterTableOptions::RenameTable { .. }
+                        | AlterTableOptions::AddColumns { .. } => (vec![], false),
                     };
                     table_format
                         .alter_table_properties(runtime, &location, changes, if_exists_flag)
@@ -556,6 +581,36 @@ impl CatalogCommand {
                 manager.create_view(&view, options).await?;
                 display.bools().to_record_batch(vec![true])?
             }
+            CatalogCommand::AddPartitions {
+                table,
+                partitions,
+                if_not_exists,
+            } => {
+                manager
+                    .add_partitions(&table, partitions, if_not_exists)
+                    .await?;
+                display.bools().to_record_batch(vec![true])?
+            }
+            CatalogCommand::DropPartition { table, options } => {
+                manager.drop_partition(&table, options).await?;
+                display.bools().to_record_batch(vec![true])?
+            }
+            CatalogCommand::ShowPartitions { table, spec } => {
+                let partitions = manager.list_partitions(&table, spec).await?;
+                let serializer = ArrowSerializer::default();
+                let rows: Vec<ShowPartitionsRow> = partitions
+                    .into_iter()
+                    .map(|p| ShowPartitionsRow {
+                        partition: p
+                            .spec
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    })
+                    .collect();
+                serializer.build_record_batch(&rows)?
+            }
         };
         Ok(batch)
     }
@@ -585,4 +640,9 @@ struct ShowTableExtendedRow {
     table_name: String,
     is_temporary: bool,
     information: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShowPartitionsRow {
+    partition: String,
 }

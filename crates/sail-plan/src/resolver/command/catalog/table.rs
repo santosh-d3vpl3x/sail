@@ -2,7 +2,8 @@ use datafusion_expr::LogicalPlan;
 use sail_catalog::command::CatalogCommand;
 use sail_catalog::manager::CatalogManager;
 use sail_catalog::provider::{
-    AlterTableOptions, CatalogPartitionField, CreateTableColumnOptions, CreateTableOptions,
+    AddPartitionOptions, AlterTableOptions, CatalogPartitionField, CreateTableColumnOptions,
+    CreateTableOptions, DropPartitionOptions,
 };
 use sail_common::spec;
 use sail_common_datafusion::catalog::{
@@ -412,7 +413,7 @@ impl PlanResolver<'_> {
         table: spec::ObjectName,
         if_exists: bool,
         operation: spec::AlterTableOperation,
-        _state: &mut PlanResolverState,
+        state: &mut PlanResolverState,
     ) -> PlanResult<LogicalPlan> {
         let options = match operation {
             spec::AlterTableOperation::SetTableProperties { properties } => {
@@ -420,6 +421,55 @@ impl PlanResolver<'_> {
             }
             spec::AlterTableOperation::UnsetTableProperties { keys, if_exists } => {
                 AlterTableOptions::UnsetTableProperties { keys, if_exists }
+            }
+            spec::AlterTableOperation::RenameTable { new_name } => {
+                let new_name: Vec<String> = new_name.into();
+                let new_name = new_name
+                    .last()
+                    .ok_or_else(|| PlanError::invalid("RENAME TO requires a table name"))?
+                    .clone();
+                AlterTableOptions::RenameTable { new_name }
+            }
+            spec::AlterTableOperation::AddColumns { columns } => {
+                let columns = self.resolve_table_columns(columns, state)?;
+                AlterTableOptions::AddColumns { columns }
+            }
+            spec::AlterTableOperation::AddPartitions {
+                partitions,
+                if_not_exists,
+            } => {
+                let table_name: Vec<String> = table.into();
+                let partitions = partitions
+                    .into_iter()
+                    .map(|spec| {
+                        let spec = Self::resolve_partition_spec(spec)?;
+                        Ok(AddPartitionOptions {
+                            spec,
+                            location: None,
+                        })
+                    })
+                    .collect::<PlanResult<Vec<_>>>()?;
+                return self.resolve_catalog_command(CatalogCommand::AddPartitions {
+                    table: table_name,
+                    partitions,
+                    if_not_exists,
+                });
+            }
+            spec::AlterTableOperation::DropPartition {
+                partition,
+                if_exists: part_if_exists,
+                purge,
+            } => {
+                let table_name: Vec<String> = table.into();
+                let spec = Self::resolve_partition_spec(partition)?;
+                return self.resolve_catalog_command(CatalogCommand::DropPartition {
+                    table: table_name,
+                    options: DropPartitionOptions {
+                        spec,
+                        if_exists: part_if_exists,
+                        purge,
+                    },
+                });
             }
             spec::AlterTableOperation::Unknown => {
                 return Err(PlanError::todo("unsupported ALTER TABLE operation"));
@@ -430,5 +480,38 @@ impl PlanResolver<'_> {
             if_exists,
             options,
         })
+    }
+
+    /// Resolve a partition spec's expression values to string literals.
+    pub(crate) fn resolve_partition_spec(
+        spec: spec::PartitionSpec,
+    ) -> PlanResult<Vec<(String, String)>> {
+        spec.into_iter()
+            .map(|(name, value)| {
+                let name: String = name.into();
+                let value = value
+                    .ok_or_else(|| {
+                        PlanError::invalid(format!(
+                            "partition column '{name}' must have a value"
+                        ))
+                    })?;
+                let value_str = match &value {
+                    spec::Expr::Literal(spec::Literal::Utf8 { value: Some(s) }) => s.clone(),
+                    spec::Expr::Literal(spec::Literal::Int8 { value: Some(n) }) => n.to_string(),
+                    spec::Expr::Literal(spec::Literal::Int16 { value: Some(n) }) => n.to_string(),
+                    spec::Expr::Literal(spec::Literal::Int32 { value: Some(n) }) => n.to_string(),
+                    spec::Expr::Literal(spec::Literal::Int64 { value: Some(n) }) => n.to_string(),
+                    spec::Expr::Literal(spec::Literal::Float32 { value: Some(n) }) => n.to_string(),
+                    spec::Expr::Literal(spec::Literal::Float64 { value: Some(n) }) => n.to_string(),
+                    spec::Expr::Literal(spec::Literal::Boolean { value: Some(b) }) => b.to_string(),
+                    other => {
+                        return Err(PlanError::invalid(format!(
+                            "partition value for '{name}' must be a literal, got: {other:?}"
+                        )));
+                    }
+                };
+                Ok((name, value_str))
+            })
+            .collect()
     }
 }

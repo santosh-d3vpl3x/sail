@@ -354,6 +354,10 @@ pub enum CommandNode {
     RecoverPartitions {
         table: ObjectName,
     },
+    ShowPartitions {
+        table: ObjectName,
+        spec: Option<Vec<(Identifier, Option<Expr>)>>,
+    },
     IsCached {
         table: ObjectName,
     },
@@ -1301,8 +1305,23 @@ pub enum AlterTableOperation {
     Unknown,
     SetTableProperties { properties: Vec<(String, String)> },
     UnsetTableProperties { keys: Vec<String>, if_exists: bool },
+    RenameTable { new_name: ObjectName },
+    AddColumns { columns: Vec<TableColumnDefinition> },
+    AddPartitions {
+        partitions: Vec<PartitionSpec>,
+        if_not_exists: bool,
+    },
+    DropPartition {
+        partition: PartitionSpec,
+        if_exists: bool,
+        purge: bool,
+    },
     // TODO: add all the alter table operations
 }
+
+/// A partition specification as a list of (column, optional value) pairs.
+/// When value is `None`, the partition is unbound (used for partial specs).
+pub type PartitionSpec = Vec<(Identifier, Option<Expr>)>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

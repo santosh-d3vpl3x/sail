@@ -7,7 +7,7 @@ pub use options::*;
 pub use runtime::*;
 use sail_common_datafusion::catalog::{DatabaseStatus, TableStatus};
 
-use crate::error::CatalogResult;
+use crate::error::{CatalogError, CatalogResult};
 
 /// A trait that defines the interface for a catalog.
 /// A catalog contains *databases*, where each database has a multi-level name
@@ -96,4 +96,70 @@ pub trait CatalogProvider: Send + Sync {
         view: &str,
         options: DropViewOptions,
     ) -> CatalogResult<()>;
+
+    /// Adds one or more partitions to a table in the catalog.
+    async fn add_partitions(
+        &self,
+        database: &Namespace,
+        table: &str,
+        partitions: Vec<AddPartitionOptions>,
+        if_not_exists: bool,
+    ) -> CatalogResult<()> {
+        let _ = (database, table, partitions, if_not_exists);
+        Err(CatalogError::NotSupported(
+            "add partitions".to_string(),
+        ))
+    }
+
+    /// Drops a partition from a table in the catalog.
+    async fn drop_partition(
+        &self,
+        database: &Namespace,
+        table: &str,
+        options: DropPartitionOptions,
+    ) -> CatalogResult<()> {
+        let _ = (database, table, options);
+        Err(CatalogError::NotSupported(
+            "drop partition".to_string(),
+        ))
+    }
+
+    /// Lists all partitions of a table, optionally filtered by a partial spec.
+    async fn list_partitions(
+        &self,
+        database: &Namespace,
+        table: &str,
+        spec: Option<Vec<(String, String)>>,
+    ) -> CatalogResult<Vec<PartitionStatus>> {
+        let _ = (database, table, spec);
+        Err(CatalogError::NotSupported(
+            "list partitions".to_string(),
+        ))
+    }
+    }
+    
+    /// Renames a partition in a table.
+    async fn rename_partition(
+        &self,
+        database: &Namespace,
+        table: &str,
+        options: RenamePartitionOptions,
+    ) -> CatalogResult<()> {
+        let _ = (database, table, options);
+        Err(CatalogError::NotSupported(
+            "rename partition".to_string(),
+        ))
+    }
+}
+    async fn rename_partition(
+        &self,
+        database: &Namespace,
+        table: &str,
+        options: RenamePartitionOptions,
+    ) -> CatalogResult<()> {
+        let _ = (database, table, options);
+        Err(CatalogError::NotSupported(
+            "rename partition".to_string(),
+        ))
+    }
 }

@@ -146,6 +146,14 @@ mod tests {
             parse_one_statement("SELECT U&\"a#2014b#+002014c\"   UESCAPE '#'")?.text(),
             "SELECT U&\"a#2014b#+002014c\" UESCAPE '#' "
         );
+        assert_eq!(
+            parse_one_statement("SHOW PARTITIONS test_table")?.text(),
+            "SHOW PARTITIONS test_table "
+        );
+        assert_eq!(
+            parse_one_statement("SHOW PARTITIONS test_table PARTITION (a=1, b='val')")?.text(),
+            "SHOW PARTITIONS test_table PARTITION ( a = 1 , b = 'val' ) "
+        );
         Ok(())
     }
 }

@@ -58,6 +58,30 @@ pub(crate) fn database_to_status(
     })
 }
 
+/// Property key prefixes that are internal to HMS or Spark and should not
+/// be exposed as user-visible table properties.  Spark's
+/// `HiveExternalCatalog` strips these before returning metadata to callers.
+const INTERNAL_PROPERTY_PREFIXES: &[&str] = &[
+    "spark.sql.sources.schema",
+    "spark.sql.create.version",
+    "COLUMN_STATS_ACCURATE",
+    "numFiles",
+    "numRows",
+    "rawDataSize",
+    "totalSize",
+    "transient_lastDdlTime",
+    "EXTERNAL",
+    "TRANSLATED_TO_EXTERNAL",
+];
+
+/// Returns `true` if `key` is an internal HMS / Spark property that should
+/// be hidden from user-facing metadata.
+fn is_internal_property(key: &str) -> bool {
+    INTERNAL_PROPERTY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 pub(crate) fn table_to_status(
     catalog: &str,
     database: &Namespace,
@@ -68,7 +92,10 @@ pub(crate) fn table_to_status(
         .as_ref()
         .ok_or_else(|| CatalogError::External("Table is missing a name".to_string()))?
         .to_string();
-    let properties = map_to_vec(table.parameters.as_ref());
+    let properties: Vec<(String, String)> = map_to_vec(table.parameters.as_ref())
+        .into_iter()
+        .filter(|(k, _)| !is_internal_property(k))
+        .collect();
     let comment = extract_property(table.parameters.as_ref(), COMMENT_KEY);
     let storage = table.sd.as_ref();
     let columns = columns_from_hms(storage, table.partition_keys.as_ref())?;
@@ -187,12 +214,10 @@ pub(crate) fn build_generic_table(
             FastStr::from_string(comment),
         );
     }
-    if format.logical_format == "delta" {
-        parameters.get_or_insert_with(AHashMap::new).insert(
-            FastStr::from_static_str(SPARK_DATASOURCE_PROVIDER_KEY),
-            FastStr::from_static_str("delta"),
-        );
-    }
+    parameters.get_or_insert_with(AHashMap::new).insert(
+        FastStr::from_static_str(SPARK_DATASOURCE_PROVIDER_KEY),
+        FastStr::from_string(format.logical_format.to_string()),
+    );
 
     let table_type = if location.is_some() {
         parameters.get_or_insert_with(AHashMap::new).insert(
@@ -303,6 +328,12 @@ fn table_provider_format(parameters: Option<&AHashMap<FastStr, FastStr>>) -> Opt
     let provider = extract_property(parameters, SPARK_DATASOURCE_PROVIDER_KEY)?;
     match provider.trim().to_ascii_lowercase().as_str() {
         "delta" | "deltalake" => Some("delta".to_string()),
+        "parquet" => Some("parquet".to_string()),
+        "csv" => Some("csv".to_string()),
+        "json" => Some("json".to_string()),
+        "orc" => Some("orc".to_string()),
+        "avro" => Some("avro".to_string()),
+        "textfile" => Some("textfile".to_string()),
         _ => None,
     }
 }
@@ -420,7 +451,9 @@ fn field_schema_to_status(
     })
 }
 
-fn column_to_field_schema(column: CreateTableColumnOptions) -> CatalogResult<FieldSchema> {
+pub(crate) fn column_to_field_schema(
+    column: CreateTableColumnOptions,
+) -> CatalogResult<FieldSchema> {
     Ok(FieldSchema {
         name: Some(column.name.into()),
         r#type: Some(arrow_to_hive_type(&column.data_type)?.into()),
@@ -446,6 +479,8 @@ fn current_time_secs() -> CatalogResult<i32> {
 mod tests {
     #![expect(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use std::sync::Arc;
+
     use arrow::datatypes::DataType;
     use sail_catalog::hive_format::HiveStorageFormat;
     use sail_catalog::provider::{
@@ -453,7 +488,8 @@ mod tests {
     };
 
     use super::{
-        build_generic_table, build_view, database_to_status, is_view_table, map_to_vec,
+        build_generic_table, build_view, column_to_field_schema, database_to_status,
+        is_internal_property, is_view_table, map_to_vec, table_provider_format,
         validate_namespace, GenericTableFormat, COMMENT_KEY, SPARK_DATASOURCE_PROVIDER_KEY,
         VIRTUAL_VIEW_TYPE,
     };
@@ -700,5 +736,242 @@ mod tests {
             Some("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe")
         );
         assert_eq!(serde.name.as_deref(), Some("default.v"));
+    }
+
+    #[test]
+    fn test_is_internal_property_matches_prefixes() {
+        // Internal properties should be recognized.
+        assert!(is_internal_property("spark.sql.sources.schema"));
+        assert!(is_internal_property("spark.sql.sources.schema.part.0"));
+        assert!(is_internal_property("spark.sql.sources.schema.numParts"));
+        assert!(is_internal_property("spark.sql.create.version"));
+        assert!(is_internal_property("COLUMN_STATS_ACCURATE"));
+        assert!(is_internal_property("numFiles"));
+        assert!(is_internal_property("numRows"));
+        assert!(is_internal_property("rawDataSize"));
+        assert!(is_internal_property("totalSize"));
+        assert!(is_internal_property("transient_lastDdlTime"));
+        assert!(is_internal_property("EXTERNAL"));
+        assert!(is_internal_property("TRANSLATED_TO_EXTERNAL"));
+    }
+
+    #[test]
+    fn test_is_internal_property_passes_user_keys() {
+        // User-defined properties should not be filtered.
+        assert!(!is_internal_property("my.custom.prop"));
+        assert!(!is_internal_property("comment"));
+        assert!(!is_internal_property("description"));
+        // spark.sql.sources.provider is user-visible (not under schema prefix).
+        assert!(!is_internal_property("spark.sql.sources.provider"));
+    }
+
+    #[test]
+    fn test_table_provider_format_recognizes_all_standard_formats() {
+        let make_params =
+            |provider: &str| -> pilota::AHashMap<pilota::FastStr, pilota::FastStr> {
+                [(
+                    pilota::FastStr::from_static_str(SPARK_DATASOURCE_PROVIDER_KEY),
+                    pilota::FastStr::from_string(provider.to_string()),
+                )]
+                .into_iter()
+                .collect()
+            };
+
+        let cases = [
+            ("delta", Some("delta")),
+            ("deltalake", Some("delta")),
+            ("parquet", Some("parquet")),
+            ("csv", Some("csv")),
+            ("json", Some("json")),
+            ("orc", Some("orc")),
+            ("avro", Some("avro")),
+            ("textfile", Some("textfile")),
+            ("unknown_format", None),
+        ];
+
+        for (provider, expected) in cases {
+            let params = make_params(provider);
+            let result = table_provider_format(Some(&params));
+            assert_eq!(
+                result.as_deref(),
+                expected,
+                "table_provider_format({provider:?}) mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn test_table_provider_format_returns_none_when_missing() {
+        assert_eq!(table_provider_format(None), None);
+
+        let empty: pilota::AHashMap<pilota::FastStr, pilota::FastStr> = Default::default();
+        assert_eq!(table_provider_format(Some(&empty)), None);
+    }
+
+    #[test]
+    fn test_build_generic_table_sets_provider_for_all_formats() {
+        let formats = [
+            ("parquet", &HiveStorageFormat::parquet()),
+            ("csv", &HiveStorageFormat::csv()),
+            ("json", &HiveStorageFormat::json()),
+            ("orc", &HiveStorageFormat::orc()),
+            ("avro", &HiveStorageFormat::avro()),
+            ("textfile", &HiveStorageFormat::textfile()),
+            ("delta", &HiveStorageFormat::parquet()),
+        ];
+
+        for (logical_format, storage_format) in formats {
+            let table = build_generic_table(
+                "default",
+                "t",
+                vec![CreateTableColumnOptions {
+                    name: "id".to_string(),
+                    data_type: DataType::Int64,
+                    nullable: false,
+                    comment: None,
+                    default: None,
+                    generated_always_as: None,
+                }],
+                vec![],
+                None,
+                GenericTableFormat {
+                    logical_format,
+                    storage: storage_format,
+                },
+                None,
+                vec![],
+            )
+            .unwrap();
+
+            let properties = map_to_vec(table.parameters.as_ref());
+            assert!(
+                properties
+                    .iter()
+                    .any(|(k, v)| k == SPARK_DATASOURCE_PROVIDER_KEY && v == logical_format),
+                "expected spark.sql.sources.provider={logical_format} in properties: {properties:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_table_to_status_filters_internal_properties() {
+        let namespace = sail_catalog::provider::Namespace::try_from(vec!["default"]).unwrap();
+        let mut table = build_generic_table(
+            "default",
+            "t",
+            vec![CreateTableColumnOptions {
+                name: "id".to_string(),
+                data_type: DataType::Int64,
+                nullable: false,
+                comment: None,
+                default: None,
+                generated_always_as: None,
+            }],
+            vec![],
+            Some("s3://warehouse/t".to_string()),
+            GenericTableFormat {
+                logical_format: "parquet",
+                storage: &HiveStorageFormat::parquet(),
+            },
+            None,
+            vec![("user.prop".to_string(), "value".to_string())],
+        )
+        .unwrap();
+
+        // Inject internal HMS properties that Spark would set.
+        let params = table.parameters.get_or_insert_with(Default::default);
+        params.insert("numFiles".into(), "10".into());
+        params.insert("numRows".into(), "1000".into());
+        params.insert("totalSize".into(), "999".into());
+        params.insert("rawDataSize".into(), "800".into());
+        params.insert("transient_lastDdlTime".into(), "12345".into());
+        params.insert("COLUMN_STATS_ACCURATE".into(), "{}".into());
+        params.insert("spark.sql.sources.schema.numParts".into(), "1".into());
+        params.insert("spark.sql.sources.schema.part.0".into(), "{}".into());
+        params.insert("spark.sql.create.version".into(), "3.5.0".into());
+        params.insert("TRANSLATED_TO_EXTERNAL".into(), "TRUE".into());
+
+        let status = super::table_to_status("hms", &namespace, &table).unwrap();
+        match status.kind {
+            sail_common_datafusion::catalog::TableKind::Table { properties, .. } => {
+                // User property should survive.
+                assert!(
+                    properties.iter().any(|(k, v)| k == "user.prop" && v == "value"),
+                    "user property missing from: {properties:?}"
+                );
+                // spark.sql.sources.provider is NOT filtered (it's user-visible).
+                assert!(
+                    properties
+                        .iter()
+                        .any(|(k, _)| k == SPARK_DATASOURCE_PROVIDER_KEY),
+                    "spark.sql.sources.provider should be visible: {properties:?}"
+                );
+                // All internal properties should be gone.
+                let internal_keys: Vec<_> = properties
+                    .iter()
+                    .filter(|(k, _)| super::is_internal_property(k))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                assert!(
+                    internal_keys.is_empty(),
+                    "internal properties leaked: {internal_keys:?}"
+                );
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_column_to_field_schema_maps_name_and_type() {
+        let field = super::column_to_field_schema(CreateTableColumnOptions {
+            name: "age".to_string(),
+            data_type: DataType::Int32,
+            nullable: true,
+            comment: None,
+            default: None,
+            generated_always_as: None,
+        })
+        .unwrap();
+
+        assert_eq!(field.name.as_deref(), Some("age"));
+        assert_eq!(field.r#type.as_deref(), Some("int"));
+        assert!(field.comment.is_none());
+    }
+
+    #[test]
+    fn test_column_to_field_schema_includes_comment() {
+        let field = super::column_to_field_schema(CreateTableColumnOptions {
+            name: "email".to_string(),
+            data_type: DataType::Utf8,
+            nullable: true,
+            comment: Some("user email address".to_string()),
+            default: None,
+            generated_always_as: None,
+        })
+        .unwrap();
+
+        assert_eq!(field.name.as_deref(), Some("email"));
+        assert_eq!(field.r#type.as_deref(), Some("string"));
+        assert_eq!(field.comment.as_deref(), Some("user email address"));
+    }
+
+    #[test]
+    fn test_column_to_field_schema_handles_complex_type() {
+        let field = super::column_to_field_schema(CreateTableColumnOptions {
+            name: "tags".to_string(),
+            data_type: DataType::List(Arc::new(arrow::datatypes::Field::new(
+                "item",
+                DataType::Utf8,
+                true,
+            ))),
+            nullable: true,
+            comment: None,
+            default: None,
+            generated_always_as: None,
+        })
+        .unwrap();
+
+        assert_eq!(field.name.as_deref(), Some("tags"));
+        assert_eq!(field.r#type.as_deref(), Some("array<string>"));
     }
 }

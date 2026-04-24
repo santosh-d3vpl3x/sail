@@ -103,4 +103,35 @@ pub struct DropTemporaryViewOptions {
 pub enum AlterTableOptions {
     SetTableProperties { properties: Vec<(String, String)> },
     UnsetTableProperties { keys: Vec<String>, if_exists: bool },
+    RenameTable { new_name: String },
+    AddColumns { columns: Vec<CreateTableColumnOptions> },
+}
+
+/// A single partition to add to a table.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Serialize, Deserialize)]
+pub struct AddPartitionOptions {
+    pub spec: Vec<(String, String)>,
+    pub location: Option<String>,
+}
+
+/// Options for dropping a partition from a table.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Serialize, Deserialize)]
+pub struct DropPartitionOptions {
+    pub spec: Vec<(String, String)>,
+    pub if_exists: bool,
+    pub purge: bool,
+}
+
+/// Options for renaming a partition in a table.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Serialize, Deserialize)]
+pub struct RenamePartitionOptions {
+    pub old_spec: Vec<(String, String)>,
+    pub new_spec: Vec<(String, String)>,
+}
+
+/// Status information about a table partition.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Serialize, Deserialize)]
+pub struct PartitionStatus {
+    pub spec: Vec<(String, String)>,
+    pub location: Option<String>,
 }

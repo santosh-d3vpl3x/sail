@@ -2,7 +2,10 @@ use sail_common_datafusion::catalog::TableStatus;
 
 use crate::error::{CatalogError, CatalogObject, CatalogResult};
 use crate::manager::CatalogManager;
-use crate::provider::{AlterTableOptions, CreateTableOptions, DropTableOptions};
+use crate::provider::{
+    AddPartitionOptions, AlterTableOptions, CreateTableOptions, DropPartitionOptions,
+    DropTableOptions, PartitionStatus,
+};
 use crate::utils::match_pattern;
 
 impl CatalogManager {
@@ -118,5 +121,35 @@ impl CatalogManager {
             )),
             Err(e) => Err(e),
         }
+    }
+
+    pub async fn add_partitions<T: AsRef<str>>(
+        &self,
+        table: &[T],
+        partitions: Vec<AddPartitionOptions>,
+        if_not_exists: bool,
+    ) -> CatalogResult<()> {
+        let (provider, database, table) = self.resolve_object(table)?;
+        provider
+            .add_partitions(&database, &table, partitions, if_not_exists)
+            .await
+    }
+
+    pub async fn drop_partition<T: AsRef<str>>(
+        &self,
+        table: &[T],
+        options: DropPartitionOptions,
+    ) -> CatalogResult<()> {
+        let (provider, database, table) = self.resolve_object(table)?;
+        provider.drop_partition(&database, &table, options).await
+    }
+
+    pub async fn list_partitions<T: AsRef<str>>(
+        &self,
+        table: &[T],
+        spec: Option<Vec<(String, String)>>,
+    ) -> CatalogResult<Vec<PartitionStatus>> {
+        let (provider, database, table) = self.resolve_object(table)?;
+        provider.list_partitions(&database, &table, spec).await
     }
 }
