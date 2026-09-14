@@ -116,3 +116,15 @@ def test_rejects_change_data_feed_options_instead_of_returning_a_snapshot(spark,
             .load(str(table_path))
             .collect()
         )
+
+def test_rejects_invalid_partition_overwrite_mode(spark, tmp_path):
+    table_path = tmp_path / "delta_invalid_partition_overwrite_mode"
+
+    with pytest.raises(Exception, match=r"invalid option.*partitionOverwriteMode.*bogus"):
+        (
+            spark.range(1)
+            .write.format("delta")
+            .mode("overwrite")
+            .option("partitionOverwriteMode", "bogus")
+            .save(str(table_path))
+        )

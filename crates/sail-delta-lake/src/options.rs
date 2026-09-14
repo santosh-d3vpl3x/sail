@@ -89,6 +89,46 @@ fn reject_operational_option_presence(
     reject_operational_option_if(options, keys, |_| true)
 }
 
+fn validate_partition_overwrite_mode(options: &[OptionLayer]) -> DataSourceResult<()> {
+    // Option layers are applied in order. Validate only the effective value so an explicit
+    // writer option continues to override a session fallback.
+    let mut effective: Option<(&str, &str)> = None;
+    for layer in options {
+        let OptionLayer::OptionList { items } = layer else {
+            continue;
+        };
+        for (key, value) in items {
+            if key.eq_ignore_ascii_case("partition_overwrite_mode")
+                || key.eq_ignore_ascii_case("partitionOverwriteMode")
+            {
+                effective = Some((key, value));
+            }
+        }
+    }
+
+    let Some((key, value)) = effective else {
+        return Ok(());
+    };
+    if value.trim().eq_ignore_ascii_case("static") {
+        return Ok(());
+    }
+    if value.trim().eq_ignore_ascii_case("dynamic") {
+        return Err(DataSourceError::InvalidOption {
+            key: key.to_string(),
+            value: value.to_string(),
+            cause: Some(
+                "unsupported Delta option affects data correctness and must not be silently ignored"
+                    .to_string(),
+            ),
+        });
+    }
+    Err(DataSourceError::InvalidOption {
+        key: key.to_string(),
+        value: value.to_string(),
+        cause: Some("expected one of: static, dynamic".to_string()),
+    })
+}
+
 impl ResolveOptions for r#gen::DeltaReadOptions {
     fn resolve(_ctx: &dyn Session, options: Vec<OptionLayer>) -> DataSourceResult<Self> {
         // readChangeFeed=false is equivalent to the supported snapshot read and is safe.
@@ -129,12 +169,9 @@ impl ResolveOptions for r#gen::DeltaWriteOptions {
         )?;
 
         // Static is Sail's current overwrite behavior and is safe to accept explicitly. Dynamic
-        // is not implemented and would otherwise silently delete untouched partitions.
-        reject_operational_option_if(
-            &options,
-            &["partition_overwrite_mode", "partitionOverwriteMode"],
-            |value| value.trim().eq_ignore_ascii_case("dynamic"),
-        )?;
+        // is not implemented and would otherwise silently delete untouched partitions. Unknown
+        // values are rejected rather than being silently ignored.
+        validate_partition_overwrite_mode(&options)?;
 
         // dataChange=true is the behavior Sail already emits. Only false requests semantics that
         // Sail cannot currently represent safely for downstream incremental readers.
