@@ -62,7 +62,7 @@ fn reject_unsupported_semantic_options(
             _ => continue,
         };
         for (key, value) in items {
-            let normalized_key = key.strip_prefix("option.").unwrap_or(key);
+            let normalized_key = key.strip_prefix("option.").unwrap_or(key.as_str());
             if unsupported_keys
                 .iter()
                 .any(|candidate| normalized_key.eq_ignore_ascii_case(candidate))
