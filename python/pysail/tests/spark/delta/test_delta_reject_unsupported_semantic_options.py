@@ -1,5 +1,5 @@
-from pyspark.sql.types import Row
 import pytest
+from pyspark.sql.types import Row
 
 
 _ERROR = "unsupported Delta option affects data correctness"
