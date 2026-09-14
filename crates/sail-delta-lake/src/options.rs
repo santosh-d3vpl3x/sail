@@ -63,7 +63,9 @@ fn reject_operational_option_if(
             continue;
         };
         for (key, value) in items {
-            if keys.iter().any(|candidate| key.eq_ignore_ascii_case(candidate))
+            if keys
+                .iter()
+                .any(|candidate| key.eq_ignore_ascii_case(candidate))
                 && should_reject(value)
             {
                 return Err(DataSourceError::InvalidOption {
@@ -90,11 +92,9 @@ fn reject_operational_option_presence(
 impl ResolveOptions for r#gen::DeltaReadOptions {
     fn resolve(_ctx: &dyn Session, options: Vec<OptionLayer>) -> DataSourceResult<Self> {
         // readChangeFeed=false is equivalent to the supported snapshot read and is safe.
-        reject_operational_option_if(
-            &options,
-            &["read_change_feed", "readChangeFeed"],
-            |value| value.trim().eq_ignore_ascii_case("true"),
-        )?;
+        reject_operational_option_if(&options, &["read_change_feed", "readChangeFeed"], |value| {
+            value.trim().eq_ignore_ascii_case("true")
+        })?;
         // A requested CDF/version range changes which rows must be returned, regardless of the
         // surrounding readChangeFeed spelling. Until implemented, never return a full snapshot.
         reject_operational_option_presence(
@@ -138,11 +138,9 @@ impl ResolveOptions for r#gen::DeltaWriteOptions {
 
         // dataChange=true is the behavior Sail already emits. Only false requests semantics that
         // Sail cannot currently represent safely for downstream incremental readers.
-        reject_operational_option_if(
-            &options,
-            &["data_change", "dataChange"],
-            |value| value.trim().eq_ignore_ascii_case("false"),
-        )?;
+        reject_operational_option_if(&options, &["data_change", "dataChange"], |value| {
+            value.trim().eq_ignore_ascii_case("false")
+        })?;
 
         let mut partial = r#gen::DeltaWritePartialOptions::initialize();
         for layer in options {
