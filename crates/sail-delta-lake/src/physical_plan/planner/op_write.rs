@@ -187,11 +187,8 @@ async fn build_overwrite_if_plan(
             .map(|predicate| format!(" `{predicate}`"))
             .unwrap_or_default()
     ))]);
-    let validation = when(
-        Expr::IsTrue(Box::new(condition_expr.clone())),
-        lit(1_i8),
-    )
-    .otherwise(validation_error)?;
+    let validation = when(Expr::IsTrue(Box::new(condition_expr.clone())), lit(1_i8))
+        .otherwise(validation_error)?;
     let validation_predicate = validation.eq(lit(1_i8));
     let physical_validation = ctx
         .session()
