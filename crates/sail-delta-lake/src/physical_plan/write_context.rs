@@ -132,7 +132,6 @@ enum SchemaMode {
     Overwrite,
 }
 
-#[expect(clippy::too_many_arguments)]
 fn select_write_operation(
     planned: Option<DeltaOperation>,
     operation_override: Option<DeltaOperation>,
@@ -161,6 +160,7 @@ fn select_write_operation(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 pub fn prepare_delta_write_context(
     table_url: &Url,
     table_snapshot: Option<&DeltaSnapshot>,
