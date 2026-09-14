@@ -6,6 +6,8 @@ use crate::resolver::PlanResolver;
 use crate::resolver::command::write::{WriteColumnMatch, WriteMode, WritePlanBuilder, WriteTarget};
 use crate::resolver::state::PlanResolverState;
 
+const V1_REPLACE_WHERE_SOURCE_PREFIX: &str = "__sail_v1_replace_where__:";
+
 impl PlanResolver<'_> {
     /// Resolves the write operation for the Spark DataFrameWriter v1 API.
     pub(super) async fn resolve_command_write(
@@ -75,7 +77,13 @@ impl PlanResolver<'_> {
                         WriteMode::TruncateIf {
                             condition: Box::new(spec::ExprWithSource {
                                 expr: spec_expr,
-                                source: Some(replace_where.clone()),
+                                // Preserve the semantic origin across the shared conditional-
+                                // overwrite pipeline. Delta strips this private marker before
+                                // writing commit metadata and uses it only to apply V1
+                                // replaceWhere input validation.
+                                source: Some(format!(
+                                    "{V1_REPLACE_WHERE_SOURCE_PREFIX}{replace_where}"
+                                )),
                             }),
                         }
                     }
