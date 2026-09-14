@@ -62,6 +62,32 @@ Feature: Delta Lake Overwrite
         | 5  | A        | 100   |
         | 6  | A        | 200   |
 
+    Scenario: Conditional overwrite preserves rows where predicate evaluates to NULL
+      Given statement
+        """
+        INSERT INTO delta_overwrite_basic VALUES (7, NULL, 70)
+        """
+      Given statement
+        """
+        INSERT INTO delta_overwrite_basic
+        REPLACE WHERE category = 'A'
+        SELECT * FROM VALUES
+          (5, 'A', 100),
+          (6, 'A', 200)
+        AS tab(id, category, value)
+        """
+      When query
+        """
+        SELECT id, category, value FROM delta_overwrite_basic ORDER BY id
+        """
+      Then query result ordered
+        | id | category | value |
+        | 2  | B        | 20    |
+        | 4  | B        | 40    |
+        | 5  | A        | 100   |
+        | 6  | A        | 200   |
+        | 7  | NULL     | 70    |
+
     Scenario: EXPLAIN plan for full conditional overwrite (REPLACE WHERE id >= CAST(0 AS BIGINT))
       When query
         """
