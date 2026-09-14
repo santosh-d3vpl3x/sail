@@ -28,25 +28,6 @@ pub(crate) fn handle_config_set(
 ) -> SparkResult<ConfigResponse> {
     let spark = ctx.extension::<SparkSession>()?;
     let kv: Vec<ConfigKeyValue> = kv.into_iter().map(Into::into).collect();
-
-    // Sail does not yet implement dynamic partition overwrite semantics. Accepting the Spark
-    // session setting would make a later overwrite look successful while deleting untouched
-    // partitions. Reject the unsafe session state at the configuration boundary until effective
-    // per-write semantics (including writer-option precedence) are implemented.
-    if kv.iter().any(|entry| {
-        entry
-            .key
-            .eq_ignore_ascii_case("spark.sql.sources.partitionOverwriteMode")
-            && entry
-                .value
-                .as_deref()
-                .is_some_and(|value| value.trim().eq_ignore_ascii_case("dynamic"))
-    }) {
-        return Err(SparkError::invalid(
-            "spark.sql.sources.partitionOverwriteMode=dynamic is not supported because Sail cannot safely preserve untouched partitions",
-        ));
-    }
-
     let warnings = spark.get_config_warnings(&kv)?;
     spark.set_config(kv)?;
     Ok(ConfigResponse {
@@ -65,7 +46,6 @@ pub(crate) fn handle_config_get_with_default(
     let kv: Vec<ConfigKeyValue> = kv.into_iter().map(Into::into).collect();
     let warnings = spark.get_config_warnings(&kv)?;
     let pairs = spark.get_config_with_default(kv)?;
-    let pairs = pairs.into_iter().map(Into::into).collect();
     Ok(ConfigResponse {
         session_id: spark.session_id().to_string(),
         server_side_session_id: spark.session_id().to_string(),
@@ -81,7 +61,6 @@ pub(crate) fn handle_config_get_option(
     let spark = ctx.extension::<SparkSession>()?;
     let warnings = spark.get_config_warnings_by_keys(&keys)?;
     let pairs = spark.get_config_option(keys)?;
-    let pairs = pairs.into_iter().map(Into::into).collect();
     Ok(ConfigResponse {
         session_id: spark.session_id().to_string(),
         server_side_session_id: spark.session_id().to_string(),
