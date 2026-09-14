@@ -2,7 +2,7 @@ use datafusion::prelude::SessionContext;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use crate::config::ConfigKeyValue;
-use crate::error::SparkResult;
+use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
 use crate::spark::connect::{ConfigResponse, KeyValue};
 
@@ -28,6 +28,25 @@ pub(crate) fn handle_config_set(
 ) -> SparkResult<ConfigResponse> {
     let spark = ctx.extension::<SparkSession>()?;
     let kv: Vec<ConfigKeyValue> = kv.into_iter().map(Into::into).collect();
+
+    // Sail does not yet implement dynamic partition overwrite semantics. Accepting the Spark
+    // session setting would make a later overwrite look successful while deleting untouched
+    // partitions. Reject the unsafe session state at the configuration boundary until effective
+    // per-write semantics (including writer-option precedence) are implemented.
+    if kv.iter().any(|entry| {
+        entry
+            .key
+            .eq_ignore_ascii_case("spark.sql.sources.partitionOverwriteMode")
+            && entry
+                .value
+                .as_deref()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("dynamic"))
+    }) {
+        return Err(SparkError::invalid(
+            "spark.sql.sources.partitionOverwriteMode=dynamic is not supported because Sail cannot safely preserve untouched partitions",
+        ));
+    }
+
     let warnings = spark.get_config_warnings(&kv)?;
     spark.set_config(kv)?;
     Ok(ConfigResponse {
