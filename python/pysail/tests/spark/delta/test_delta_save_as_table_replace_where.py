@@ -26,3 +26,21 @@ def test_save_as_table_replace_where_preserves_unmatched_rows(spark, tmp_path):
         ]
     finally:
         spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+
+
+def test_save_as_table_replace_where_creates_absent_target(spark):
+    table_name = "delta_save_as_table_replace_where_create_test"
+
+    spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+    try:
+        replacement = spark.createDataFrame([Row(id=1, category="A")])
+        (
+            replacement.write.format("delta")
+            .mode("overwrite")
+            .option("replaceWhere", "category = 'A'")
+            .saveAsTable(table_name)
+        )
+
+        assert spark.table(table_name).collect() == [Row(id=1, category="A")]
+    finally:
+        spark.sql(f"DROP TABLE IF EXISTS {table_name}")
