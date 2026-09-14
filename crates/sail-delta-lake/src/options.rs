@@ -52,20 +52,19 @@ pub fn parse_delta_log_replay_strategy(
     }
 }
 
-fn reject_unsupported_semantic_options(
+fn reject_operational_option_if(
     options: &[OptionLayer],
-    unsupported_keys: &[&str],
+    keys: &[&str],
+    should_reject: impl Fn(&str) -> bool,
 ) -> DataSourceResult<()> {
     for layer in options {
-        let items = match layer {
-            OptionLayer::OptionList { items } | OptionLayer::TablePropertyList { items } => items,
-            _ => continue,
+        // Table properties are metadata, not an invocation of a reader/writer option.
+        let OptionLayer::OptionList { items } = layer else {
+            continue;
         };
         for (key, value) in items {
-            let normalized_key = key.strip_prefix("option.").unwrap_or(key.as_str());
-            if unsupported_keys
-                .iter()
-                .any(|candidate| normalized_key.eq_ignore_ascii_case(candidate))
+            if keys.iter().any(|candidate| key.eq_ignore_ascii_case(candidate))
+                && should_reject(value)
             {
                 return Err(DataSourceError::InvalidOption {
                     key: key.clone(),
@@ -81,16 +80,26 @@ fn reject_unsupported_semantic_options(
     Ok(())
 }
 
+fn reject_operational_option_presence(
+    options: &[OptionLayer],
+    keys: &[&str],
+) -> DataSourceResult<()> {
+    reject_operational_option_if(options, keys, |_| true)
+}
+
 impl ResolveOptions for r#gen::DeltaReadOptions {
     fn resolve(_ctx: &dyn Session, options: Vec<OptionLayer>) -> DataSourceResult<Self> {
-        // These options change which logical rows a Delta read returns. Until Sail implements
-        // them, fail fast rather than returning an ordinary snapshot with silently different
-        // semantics.
-        reject_unsupported_semantic_options(
+        // readChangeFeed=false is equivalent to the supported snapshot read and is safe.
+        reject_operational_option_if(
+            &options,
+            &["read_change_feed", "readChangeFeed"],
+            |value| value.trim().eq_ignore_ascii_case("true"),
+        )?;
+        // A requested CDF/version range changes which rows must be returned, regardless of the
+        // surrounding readChangeFeed spelling. Until implemented, never return a full snapshot.
+        reject_operational_option_presence(
             &options,
             &[
-                "read_change_feed",
-                "readChangeFeed",
                 "starting_version",
                 "startingVersion",
                 "starting_timestamp",
@@ -112,22 +121,27 @@ impl ResolveOptions for r#gen::DeltaReadOptions {
 
 impl ResolveOptions for r#gen::DeltaWriteOptions {
     fn resolve(_ctx: &dyn Session, options: Vec<OptionLayer>) -> DataSourceResult<Self> {
-        // Ignoring these changes write semantics: transaction IDs provide idempotence,
-        // dynamic partition overwrite determines which existing partitions are removed, and
-        // dataChange controls whether downstream incremental readers treat rewritten files as
-        // logical data changes.
-        reject_unsupported_semantic_options(
+        // Transaction identifiers request idempotent write semantics. Presence alone is enough
+        // to be unsafe to ignore.
+        reject_operational_option_presence(
             &options,
-            &[
-                "txn_version",
-                "txnVersion",
-                "txn_app_id",
-                "txnAppId",
-                "partition_overwrite_mode",
-                "partitionOverwriteMode",
-                "data_change",
-                "dataChange",
-            ],
+            &["txn_version", "txnVersion", "txn_app_id", "txnAppId"],
+        )?;
+
+        // Static is Sail's current overwrite behavior and is safe to accept explicitly. Dynamic
+        // is not implemented and would otherwise silently delete untouched partitions.
+        reject_operational_option_if(
+            &options,
+            &["partition_overwrite_mode", "partitionOverwriteMode"],
+            |value| value.trim().eq_ignore_ascii_case("dynamic"),
+        )?;
+
+        // dataChange=true is the behavior Sail already emits. Only false requests semantics that
+        // Sail cannot currently represent safely for downstream incremental readers.
+        reject_operational_option_if(
+            &options,
+            &["data_change", "dataChange"],
+            |value| value.trim().eq_ignore_ascii_case("false"),
         )?;
 
         let mut partial = r#gen::DeltaWritePartialOptions::initialize();
