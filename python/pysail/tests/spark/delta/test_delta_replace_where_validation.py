@@ -33,6 +33,46 @@ def test_v1_replace_where_validates_after_target_cast(spark, tmp_path):
     assert _rows(spark, path) == [Row(id=2)]
 
 
+def test_v1_replace_where_validates_generated_column_after_generation(spark, tmp_path):
+    path = tmp_path / "delta_replace_where_generated_validation"
+    table = "delta_replace_where_generated_validation_test"
+    spark.sql(f"DROP TABLE IF EXISTS {table}")
+    try:
+        spark.sql(
+            f"""
+            CREATE TABLE {table} (
+              id BIGINT,
+              event_time TIMESTAMP,
+              event_date DATE GENERATED ALWAYS AS (CAST(event_time AS DATE))
+            ) USING DELTA LOCATION '{path}'
+            """
+        )
+        spark.sql(
+            f"INSERT INTO {table} (id, event_time) VALUES (1, TIMESTAMP '2024-10-15 08:00:00')"
+        )
+
+        good = spark.sql("SELECT 2 AS id, TIMESTAMP '2024-10-15 12:00:00' AS event_time")
+        (
+            good.write.format("delta")
+            .mode("overwrite")
+            .option("replaceWhere", "event_date = DATE '2024-10-15'")
+            .save(str(path))
+        )
+        assert spark.table(table).select("id").collect() == [Row(id=2)]
+
+        bad = spark.sql("SELECT 3 AS id, TIMESTAMP '2024-10-16 12:00:00' AS event_time")
+        with pytest.raises(Exception, match="DELTA_REPLACE_WHERE_MISMATCH"):
+            (
+                bad.write.format("delta")
+                .mode("overwrite")
+                .option("replaceWhere", "event_date = DATE '2024-10-15'")
+                .save(str(path))
+            )
+        assert spark.table(table).select("id").collect() == [Row(id=2)]
+    finally:
+        spark.sql(f"DROP TABLE IF EXISTS {table}")
+
+
 def test_sql_replace_where_rejects_mismatching_input(spark, tmp_path):
     path = tmp_path / "delta_replace_where_sql_validation"
     table = "delta_replace_where_sql_validation_test"
