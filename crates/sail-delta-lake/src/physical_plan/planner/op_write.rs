@@ -22,8 +22,10 @@ use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion_expr::{ScalarUDF, lit, when};
 use sail_common_datafusion::datasource::PhysicalSinkMode;
 use sail_common_datafusion::logical_expr::ExprWithSource;
+use sail_function::scalar::misc::raise_error::RaiseError;
 
 use super::context::PlannerContext;
 use super::metadata_predicate::{build_metadata_filter, predicate_requires_stats};
@@ -168,11 +170,33 @@ async fn build_overwrite_if_plan(
         .clone()
         .to_dfschema()
         .map_err(|e| DataFusionError::External(Box::new(e)))?;
+    let predicate_source = source.or(condition.source.clone());
     let condition_expr = condition.expr.clone();
     let physical_condition = ctx
         .session()
         .create_physical_expr(condition_expr.clone(), &table_df_schema)?;
-    let predicate_source = source.or(condition.source);
+
+    // Enforce replaceWhere on the final incoming row representation. The logical write resolver
+    // has already applied target-column matching, casts, defaults, and generated-column rewrites
+    // before this physical planner runs. This location is shared by V1, V2, and SQL writes and is
+    // intentionally before retained old rows are unioned back into the writer input.
+    let validation_error = ScalarUDF::from(RaiseError::new()).call(vec![lit(format!(
+        "[DELTA_REPLACE_WHERE_MISMATCH] Data written out does not match overwrite predicate{}.",
+        predicate_source
+            .as_ref()
+            .map(|predicate| format!(" `{predicate}`"))
+            .unwrap_or_default()
+    ))]);
+    let validation = when(
+        Expr::IsTrue(Box::new(condition_expr.clone())),
+        lit(1_i8),
+    )
+    .otherwise(validation_error)?;
+    let validation_predicate = validation.eq(lit(1_i8));
+    let physical_validation = ctx
+        .session()
+        .create_physical_expr(validation_predicate, &table_df_schema)?;
+    let input: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(physical_validation, input)?);
 
     let old_data_plan = build_old_data_plan(
         ctx,
@@ -256,7 +280,7 @@ async fn build_overwrite_if_plan(
     let remove_plan = Arc::new(DeltaRemoveActionsExec::try_new(
         find_files_plan,
         Some(snapshot_state.physical_partition_columns()),
-    )?);
+    )?;
 
     let union_actions = UnionExec::try_new(vec![writer, remove_plan])?;
 
