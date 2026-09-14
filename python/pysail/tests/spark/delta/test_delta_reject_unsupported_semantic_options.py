@@ -40,6 +40,40 @@ def test_rejects_dynamic_partition_overwrite_instead_of_deleting_untouched_parti
     ]
 
 
+def test_rejects_dynamic_partition_overwrite_session_setting(spark):
+    original = spark.conf.get("spark.sql.sources.partitionOverwriteMode")
+    try:
+        with pytest.raises(Exception, match="partitionOverwriteMode=dynamic"):
+            spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+    finally:
+        spark.conf.set("spark.sql.sources.partitionOverwriteMode", original)
+
+
+def test_safe_explicit_defaults_are_accepted(spark, tmp_path):
+    table_path = tmp_path / "delta_safe_semantic_defaults"
+    spark.createDataFrame([Row(id=1, category="A")]).write.format("delta").partitionBy("category").save(str(table_path))
+
+    # These spellings request the semantics Sail already provides today.
+    (
+        spark.createDataFrame([Row(id=2, category="A")])
+        .write.format("delta")
+        .mode("overwrite")
+        .partitionBy("category")
+        .option("partitionOverwriteMode", "static")
+        .option("dataChange", "true")
+        .save(str(table_path))
+    )
+    assert spark.read.format("delta").load(str(table_path)).collect() == [Row(id=2, category="A")]
+
+    assert (
+        spark.read.format("delta")
+        .option("readChangeFeed", "false")
+        .load(str(table_path))
+        .collect()
+        == [Row(id=2, category="A")]
+    )
+
+
 def test_rejects_change_data_feed_options_instead_of_returning_a_snapshot(spark, tmp_path):
     table_path = tmp_path / "delta_cdf_options"
     spark.range(2).write.format("delta").save(str(table_path))
