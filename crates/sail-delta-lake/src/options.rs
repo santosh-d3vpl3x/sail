@@ -112,8 +112,10 @@ impl ResolveOptions for r#gen::DeltaReadOptions {
 
 impl ResolveOptions for r#gen::DeltaWriteOptions {
     fn resolve(_ctx: &dyn Session, options: Vec<OptionLayer>) -> DataSourceResult<Self> {
-        // Ignoring these changes write semantics: transaction IDs provide idempotence and
-        // dynamic partition overwrite determines which existing partitions are removed.
+        // Ignoring these changes write semantics: transaction IDs provide idempotence,
+        // dynamic partition overwrite determines which existing partitions are removed, and
+        // dataChange controls whether downstream incremental readers treat rewritten files as
+        // logical data changes.
         reject_unsupported_semantic_options(
             &options,
             &[
@@ -123,6 +125,8 @@ impl ResolveOptions for r#gen::DeltaWriteOptions {
                 "txnAppId",
                 "partition_overwrite_mode",
                 "partitionOverwriteMode",
+                "data_change",
+                "dataChange",
             ],
         )?;
 
