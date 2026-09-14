@@ -1,8 +1,11 @@
 import pytest
-from pyspark.sql.types import Row
 
 
 _ERROR = "unsupported Delta option affects data correctness"
+
+
+def _rows(df):
+    return [tuple(row) for row in df.collect()]
 
 
 def test_rejects_idempotent_transaction_options_instead_of_writing_duplicates(spark, tmp_path):
@@ -20,11 +23,11 @@ def test_rejects_idempotent_transaction_options_instead_of_writing_duplicates(sp
 
 def test_rejects_dynamic_partition_overwrite_instead_of_deleting_untouched_partitions(spark, tmp_path):
     table_path = tmp_path / "delta_dynamic_partition_overwrite"
-    spark.createDataFrame([Row(id=1, category="A"), Row(id=2, category="B")]).write.format("delta").partitionBy(
-        "category"
-    ).save(str(table_path))
+    spark.createDataFrame([(1, "A"), (2, "B")], ["id", "category"]).write.format("delta").partitionBy("category").save(
+        str(table_path)
+    )
 
-    replacement = spark.createDataFrame([Row(id=3, category="A")])
+    replacement = spark.createDataFrame([(3, "A")], ["id", "category"])
     with pytest.raises(Exception, match=_ERROR):
         (
             replacement.write.format("delta")
@@ -34,10 +37,7 @@ def test_rejects_dynamic_partition_overwrite_instead_of_deleting_untouched_parti
             .save(str(table_path))
         )
 
-    assert spark.read.format("delta").load(str(table_path)).orderBy("id").collect() == [
-        Row(id=1, category="A"),
-        Row(id=2, category="B"),
-    ]
+    assert _rows(spark.read.format("delta").load(str(table_path)).orderBy("id")) == [(1, "A"), (2, "B")]
 
 
 def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_static_overrides(
@@ -45,13 +45,13 @@ def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_sta
 ):
     original = spark.conf.get("spark.sql.sources.partitionOverwriteMode")
     table_path = tmp_path / "delta_dynamic_partition_overwrite_session"
-    spark.createDataFrame([Row(id=1, category="A"), Row(id=2, category="B")]).write.format("delta").partitionBy(
-        "category"
-    ).save(str(table_path))
+    spark.createDataFrame([(1, "A"), (2, "B")], ["id", "category"]).write.format("delta").partitionBy("category").save(
+        str(table_path)
+    )
 
     try:
         spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
-        replacement = spark.createDataFrame([Row(id=3, category="A")])
+        replacement = spark.createDataFrame([(3, "A")], ["id", "category"])
 
         with pytest.raises(Exception, match=_ERROR):
             (
@@ -61,10 +61,7 @@ def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_sta
                 .save(str(table_path))
             )
 
-        assert spark.read.format("delta").load(str(table_path)).orderBy("id").collect() == [
-            Row(id=1, category="A"),
-            Row(id=2, category="B"),
-        ]
+        assert _rows(spark.read.format("delta").load(str(table_path)).orderBy("id")) == [(1, "A"), (2, "B")]
 
         (
             replacement.write.format("delta")
@@ -73,19 +70,19 @@ def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_sta
             .option("partitionOverwriteMode", "static")
             .save(str(table_path))
         )
-        assert spark.read.format("delta").load(str(table_path)).collect() == [
-            Row(id=3, category="A")
-        ]
+        assert _rows(spark.read.format("delta").load(str(table_path))) == [(3, "A")]
     finally:
         spark.conf.set("spark.sql.sources.partitionOverwriteMode", original)
 
 
 def test_safe_explicit_defaults_are_accepted(spark, tmp_path):
     table_path = tmp_path / "delta_safe_semantic_defaults"
-    spark.createDataFrame([Row(id=1, category="A")]).write.format("delta").partitionBy("category").save(str(table_path))
+    spark.createDataFrame([(1, "A")], ["id", "category"]).write.format("delta").partitionBy("category").save(
+        str(table_path)
+    )
 
     (
-        spark.createDataFrame([Row(id=2, category="A")])
+        spark.createDataFrame([(2, "A")], ["id", "category"])
         .write.format("delta")
         .mode("overwrite")
         .partitionBy("category")
@@ -93,15 +90,13 @@ def test_safe_explicit_defaults_are_accepted(spark, tmp_path):
         .option("dataChange", "true")
         .save(str(table_path))
     )
-    assert spark.read.format("delta").load(str(table_path)).collect() == [Row(id=2, category="A")]
+    assert _rows(spark.read.format("delta").load(str(table_path))) == [(2, "A")]
 
-    assert (
+    assert _rows(
         spark.read.format("delta")
         .option("readChangeFeed", "false")
         .load(str(table_path))
-        .collect()
-        == [Row(id=2, category="A")]
-    )
+    ) == [(2, "A")]
 
 
 def test_rejects_change_data_feed_options_instead_of_returning_a_snapshot(spark, tmp_path):
