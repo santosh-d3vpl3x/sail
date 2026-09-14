@@ -40,11 +40,42 @@ def test_rejects_dynamic_partition_overwrite_instead_of_deleting_untouched_parti
     ]
 
 
-def test_rejects_dynamic_partition_overwrite_session_setting(spark):
+def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_static_overrides(
+    spark, tmp_path
+):
     original = spark.conf.get("spark.sql.sources.partitionOverwriteMode")
+    table_path = tmp_path / "delta_dynamic_partition_overwrite_session"
+    spark.createDataFrame([Row(id=1, category="A"), Row(id=2, category="B")]).write.format("delta").partitionBy(
+        "category"
+    ).save(str(table_path))
+
     try:
-        with pytest.raises(Exception, match="partitionOverwriteMode=dynamic"):
-            spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        replacement = spark.createDataFrame([Row(id=3, category="A")])
+
+        with pytest.raises(Exception, match=_ERROR):
+            (
+                replacement.write.format("delta")
+                .mode("overwrite")
+                .partitionBy("category")
+                .save(str(table_path))
+            )
+
+        assert spark.read.format("delta").load(str(table_path)).orderBy("id").collect() == [
+            Row(id=1, category="A"),
+            Row(id=2, category="B"),
+        ]
+
+        (
+            replacement.write.format("delta")
+            .mode("overwrite")
+            .partitionBy("category")
+            .option("partitionOverwriteMode", "static")
+            .save(str(table_path))
+        )
+        assert spark.read.format("delta").load(str(table_path)).collect() == [
+            Row(id=3, category="A")
+        ]
     finally:
         spark.conf.set("spark.sql.sources.partitionOverwriteMode", original)
 
@@ -53,7 +84,6 @@ def test_safe_explicit_defaults_are_accepted(spark, tmp_path):
     table_path = tmp_path / "delta_safe_semantic_defaults"
     spark.createDataFrame([Row(id=1, category="A")]).write.format("delta").partitionBy("category").save(str(table_path))
 
-    # These spellings request the semantics Sail already provides today.
     (
         spark.createDataFrame([Row(id=2, category="A")])
         .write.format("delta")
