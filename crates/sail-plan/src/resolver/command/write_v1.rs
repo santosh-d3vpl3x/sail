@@ -42,10 +42,7 @@ impl PlanResolver<'_> {
             // Spark gives an explicit writer option precedence over the session setting. Carry the
             // session value into the write options only when the writer did not specify one, so the
             // target data source can decide whether it implements the requested semantics.
-            options.push((
-                "partitionOverwriteMode".to_string(),
-                "dynamic".to_string(),
-            ));
+            options.push(("partitionOverwriteMode".to_string(), "dynamic".to_string()));
         }
 
         let replace_where = options.iter().find_map(|(k, v)| {
