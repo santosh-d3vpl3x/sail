@@ -674,8 +674,8 @@ mod tests {
             predicate: None,
         });
 
-        let selected = select_write_operation(planned, operation_override)
-            .expect("selected operation");
+        let selected =
+            select_write_operation(planned, operation_override).expect("selected operation");
         assert!(matches!(
             selected,
             DeltaOperation::Write {
