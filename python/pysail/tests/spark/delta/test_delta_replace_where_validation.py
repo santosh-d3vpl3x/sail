@@ -9,9 +9,9 @@ def _rows(spark, target):
 
 def test_v1_replace_where_rejects_false_and_preserves_table(spark, tmp_path):
     path = tmp_path / "delta_replace_where_v1_validation"
-    spark.createDataFrame([Row(id=1, category="A"), Row(id=2, category="B")]).coalesce(1).write.format(
-        "delta"
-    ).save(str(path))
+    spark.createDataFrame([Row(id=1, category="A"), Row(id=2, category="B")]).coalesce(1).write.format("delta").save(
+        str(path)
+    )
 
     bad = spark.createDataFrame([Row(id=3, category="C")])
     with pytest.raises(Exception, match="DELTA_REPLACE_WHERE_MISMATCH"):
