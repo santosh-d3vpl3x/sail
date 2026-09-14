@@ -113,13 +113,16 @@ impl PlanResolver<'_> {
                 // Preserve that lifecycle behavior while using conditional overwrite semantics
                 // for an existing target.
                 let mode = if matches!(mode, Some(SaveMode::Overwrite)) && replace_where.is_some() {
+                    // Parse the predicate before checking the catalog so malformed
+                    // replaceWhere options are rejected for missing tables too.
+                    let conditional_mode = to_write_mode(mode)?;
                     match self
                         .ctx
                         .extension::<CatalogManager>()?
                         .get_table(table.parts())
                         .await
                     {
-                        Ok(_) => to_write_mode(mode)?,
+                        Ok(_) => conditional_mode,
                         Err(CatalogError::NotFound(_, _)) => WriteMode::Replace {
                             error_if_absent: false,
                         },

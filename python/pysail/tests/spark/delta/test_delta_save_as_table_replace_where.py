@@ -1,3 +1,4 @@
+import pytest
 from pyspark.sql.types import Row
 
 
@@ -40,5 +41,24 @@ def test_save_as_table_replace_where_creates_absent_target(spark):
         )
 
         assert spark.table(table_name).collect() == [Row(id=1, category="A")]
+    finally:
+        spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+
+
+def test_save_as_table_replace_where_rejects_invalid_predicate_for_absent_target(spark):
+    table_name = "delta_save_as_table_replace_where_invalid_test"
+
+    spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+    try:
+        replacement = spark.createDataFrame([Row(id=1, category="A")])
+        with pytest.raises(Exception, match="invalid replaceWhere expression"):
+            (
+                replacement.write.format("delta")
+                .mode("overwrite")
+                .option("replaceWhere", "category =")
+                .saveAsTable(table_name)
+            )
+
+        assert not spark.catalog.tableExists(table_name)
     finally:
         spark.sql(f"DROP TABLE IF EXISTS {table_name}")
