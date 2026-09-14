@@ -40,6 +40,8 @@ use crate::physical_plan::{
 use crate::spec::{DeltaOperation, SaveMode};
 use crate::table::DeltaSnapshot;
 
+const V1_REPLACE_WHERE_SOURCE_PREFIX: &str = "__sail_v1_replace_where__:";
+
 pub async fn build_write_plan(
     ctx: &PlannerContext<'_>,
     input: Arc<dyn ExecutionPlan>,
@@ -170,30 +172,47 @@ async fn build_overwrite_if_plan(
         .clone()
         .to_dfschema()
         .map_err(|e| DataFusionError::External(Box::new(e)))?;
-    let predicate_source = source.or(condition.source.clone());
+    let raw_predicate_source = source.or(condition.source.clone());
+    let (validate_replace_where_input, predicate_source) = match raw_predicate_source {
+        Some(source) => match source.strip_prefix(V1_REPLACE_WHERE_SOURCE_PREFIX) {
+            Some(predicate) => (true, Some(predicate.to_string())),
+            None => (false, Some(source)),
+        },
+        None => (false, None),
+    };
     let condition_expr = condition.expr.clone();
     let physical_condition = ctx
         .session()
         .create_physical_expr(condition_expr.clone(), &table_df_schema)?;
 
-    // Enforce replaceWhere on the final incoming row representation. The logical write resolver
-    // has already applied target-column matching, casts, defaults, and generated-column rewrites
-    // before this physical planner runs. This location is shared by V1, V2, and SQL writes and is
-    // intentionally before retained old rows are unioned back into the writer input.
-    let validation_error = ScalarUDF::from(RaiseError::new()).call(vec![lit(format!(
-        "[DELTA_REPLACE_WHERE_MISMATCH] Data written out does not match overwrite predicate{}.",
-        predicate_source
-            .as_ref()
-            .map(|predicate| format!(" `{predicate}`"))
-            .unwrap_or_default()
-    ))]);
-    let validation = when(Expr::IsTrue(Box::new(condition_expr.clone())), lit(1_i8))
-        .otherwise(validation_error)?;
-    let validation_predicate = validation.eq(lit(1_i8));
-    let physical_validation = ctx
-        .session()
-        .create_physical_expr(validation_predicate, &table_df_schema)?;
-    let input: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(physical_validation, input)?);
+    // DataFrameWriter V1 replaceWhere is both a target-selection predicate and an input
+    // constraint. Keep that semantic distinct from SQL/V2 conditional overwrite. Bind the
+    // validation expression against the actual incoming physical schema so column indices and
+    // types match the rows being validated; the table schema remains the binding context for
+    // scanning retained old rows below.
+    let input: Arc<dyn ExecutionPlan> = if validate_replace_where_input {
+        let validation_error = ScalarUDF::from(RaiseError::new()).call(vec![lit(format!(
+            "[DELTA_REPLACE_WHERE_MISMATCH] Data written out does not match overwrite predicate{}.",
+            predicate_source
+                .as_ref()
+                .map(|predicate| format!(" `{predicate}`"))
+                .unwrap_or_default()
+        ))]);
+        let validation = when(Expr::IsTrue(Box::new(condition_expr.clone())), lit(1_i8))
+            .otherwise(validation_error)?;
+        let validation_predicate = validation.eq(lit(1_i8));
+        let input_df_schema = input
+            .schema()
+            .clone()
+            .to_dfschema()
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        let physical_validation = ctx
+            .session()
+            .create_physical_expr(validation_predicate, &input_df_schema)?;
+        Arc::new(FilterExec::try_new(physical_validation, input)?)
+    } else {
+        input
+    };
 
     let old_data_plan = build_old_data_plan(
         ctx,
