@@ -7,9 +7,7 @@ def test_save_as_table_replace_where_preserves_unmatched_rows(spark, tmp_path):
 
     spark.sql(f"DROP TABLE IF EXISTS {table_name}")
     try:
-        spark.sql(
-            f"CREATE TABLE {table_name} (id BIGINT, category STRING) USING DELTA LOCATION '{table_path}'"
-        )
+        spark.sql(f"CREATE TABLE {table_name} (id BIGINT, category STRING) USING DELTA LOCATION '{table_path}'")
         spark.sql(f"INSERT INTO {table_name} VALUES (1, 'A'), (2, 'B')")  # noqa: S608
 
         replacement = spark.createDataFrame([Row(id=3, category="A")])
