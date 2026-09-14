@@ -1,5 +1,8 @@
 use datafusion_expr::LogicalPlan;
+use sail_catalog::error::CatalogError;
+use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
+use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use crate::error::{PlanError, PlanResult};
 use crate::resolver::PlanResolver;
@@ -106,7 +109,25 @@ impl PlanResolver<'_> {
                 table,
                 save_method: TableSaveMethod::SaveAsTable,
             } => {
-                let mode = to_write_mode(mode)?;
+                // saveAsTable(overwrite + replaceWhere) is create-on-absent in Spark's V1 API.
+                // Preserve that lifecycle behavior while using conditional overwrite semantics
+                // for an existing target.
+                let mode = if matches!(mode, Some(SaveMode::Overwrite)) && replace_where.is_some() {
+                    match self
+                        .ctx
+                        .extension::<CatalogManager>()?
+                        .get_table(table.parts())
+                        .await
+                    {
+                        Ok(_) => to_write_mode(mode)?,
+                        Err(CatalogError::NotFound(_, _)) => WriteMode::Replace {
+                            error_if_absent: false,
+                        },
+                        Err(e) => return Err(e.into()),
+                    }
+                } else {
+                    to_write_mode(mode)?
+                };
                 builder = builder
                     .with_target(WriteTarget::Table {
                         table,
