@@ -133,6 +133,34 @@ enum SchemaMode {
 }
 
 #[expect(clippy::too_many_arguments)]
+fn select_write_operation(
+    planned: Option<DeltaOperation>,
+    operation_override: Option<DeltaOperation>,
+) -> Option<DeltaOperation> {
+    let Some(operation_override) = operation_override else {
+        return planned;
+    };
+
+    match (planned.as_ref(), operation_override) {
+        (
+            Some(DeltaOperation::Write {
+                predicate: Some(planned_predicate),
+                ..
+            }),
+            DeltaOperation::Write {
+                mode,
+                partition_by,
+                predicate: None,
+            },
+        ) => Some(DeltaOperation::Write {
+            mode,
+            partition_by,
+            predicate: Some(planned_predicate.clone()),
+        }),
+        (_, operation_override) => Some(operation_override),
+    }
+}
+
 pub fn prepare_delta_write_context(
     table_url: &Url,
     table_snapshot: Option<&DeltaSnapshot>,
@@ -290,7 +318,7 @@ pub fn prepare_delta_write_context(
         effective_column_mapping_mode: effective_mode,
         initial_actions,
         schema_actions,
-        operation: operation_override.or(operation),
+        operation: select_write_operation(operation, operation_override),
         logical_kernel_for_mapping,
         physical_partition_columns,
     })
@@ -627,6 +655,34 @@ mod tests {
             Some("2")
         );
         Ok(())
+    }
+
+    #[test]
+    fn operation_override_cannot_clear_conservative_mutation_predicate() {
+        let table_url = Url::parse("memory:///table").expect("table url");
+        let planned = operation_for_sink_mode(
+            &table_url,
+            &[],
+            &PhysicalSinkMode::OverwriteIf {
+                condition: None,
+                source: None,
+            },
+        );
+        let operation_override = Some(DeltaOperation::Write {
+            mode: SaveMode::Overwrite,
+            partition_by: None,
+            predicate: None,
+        });
+
+        let selected = select_write_operation(planned, operation_override)
+            .expect("selected operation");
+        assert!(matches!(
+            selected,
+            DeltaOperation::Write {
+                predicate: Some(ref predicate),
+                ..
+            } if predicate == "true"
+        ));
     }
 
     #[test]
