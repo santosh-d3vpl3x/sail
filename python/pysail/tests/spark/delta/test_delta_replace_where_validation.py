@@ -48,7 +48,7 @@ def test_v1_replace_where_validates_generated_column_after_generation(spark, tmp
             """
         )
         spark.sql(
-            f"INSERT INTO {table} (id, event_time) VALUES (1, TIMESTAMP '2024-10-15 08:00:00')"
+            f"INSERT INTO {table} (id, event_time) VALUES (1, TIMESTAMP '2024-10-15 08:00:00')"  # noqa: S608
         )
 
         good = spark.sql("SELECT 2 AS id, TIMESTAMP '2024-10-15 12:00:00' AS event_time")
@@ -79,11 +79,11 @@ def test_sql_replace_where_rejects_mismatching_input(spark, tmp_path):
     spark.sql(f"DROP TABLE IF EXISTS {table}")
     try:
         spark.sql(f"CREATE TABLE {table} (id BIGINT, category STRING) USING DELTA LOCATION '{path}'")
-        spark.sql(f"INSERT INTO {table} VALUES (1, 'A'), (2, 'B')")
+        spark.sql(f"INSERT INTO {table} VALUES (1, 'A'), (2, 'B')")  # noqa: S608
 
         with pytest.raises(Exception, match="DELTA_REPLACE_WHERE_MISMATCH"):
             spark.sql(
-                f"INSERT INTO {table} REPLACE WHERE category = 'A' "
+                f"INSERT INTO {table} REPLACE WHERE category = 'A' "  # noqa: S608
                 "SELECT * FROM VALUES (3, 'C') AS t(id, category)"
             )
 
@@ -101,7 +101,7 @@ def test_v2_overwrite_rejects_mismatching_input(spark, tmp_path):
     spark.sql(f"DROP TABLE IF EXISTS {table}")
     try:
         spark.sql(f"CREATE TABLE {table} (id BIGINT, category STRING) USING DELTA LOCATION '{path}'")
-        spark.sql(f"INSERT INTO {table} VALUES (1, 'A'), (2, 'B')")
+        spark.sql(f"INSERT INTO {table} VALUES (1, 'A'), (2, 'B')")  # noqa: S608
 
         bad = spark.createDataFrame([Row(id=3, category="C")])
         with pytest.raises(Exception, match="DELTA_REPLACE_WHERE_MISMATCH"):
