@@ -105,44 +105,15 @@ impl PlanResolver<'_> {
             SaveType::Table {
                 table,
                 save_method: TableSaveMethod::SaveAsTable,
-            } => match mode {
-                Some(SaveMode::ErrorIfExists) | None => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::ErrorIfExists);
-                }
-                Some(SaveMode::IgnoreIfExists) => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::IgnoreIfExists);
-                }
-                Some(SaveMode::Append) => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::Append {
-                            error_if_absent: false,
-                        });
-                }
-                Some(SaveMode::Overwrite) => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::Replace {
-                            error_if_absent: false,
-                        });
-                }
-            },
+            } => {
+                let mode = to_write_mode(mode)?;
+                builder = builder
+                    .with_target(WriteTarget::Table {
+                        table,
+                        column_match: WriteColumnMatch::ByName,
+                    })
+                    .with_mode(mode);
+            }
             SaveType::Table {
                 table,
                 save_method: TableSaveMethod::InsertInto,
