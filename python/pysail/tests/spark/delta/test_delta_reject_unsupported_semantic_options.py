@@ -1,5 +1,5 @@
-import pytest
 from pyspark.sql.types import Row
+import pytest
 
 
 _ERROR = "unsupported Delta option affects data correctness"
@@ -116,6 +116,7 @@ def test_rejects_change_data_feed_options_instead_of_returning_a_snapshot(spark,
             .load(str(table_path))
             .collect()
         )
+
 
 def test_rejects_invalid_partition_overwrite_mode(spark, tmp_path):
     table_path = tmp_path / "delta_invalid_partition_overwrite_mode"
