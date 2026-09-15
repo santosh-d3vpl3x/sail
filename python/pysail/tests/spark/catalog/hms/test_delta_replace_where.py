@@ -1,3 +1,6 @@
+# ruff: noqa: S608
+
+
 def test_sail_save_as_table_replace_where_preserves_rows_in_hms(
     jvm_spark,
     spark,
