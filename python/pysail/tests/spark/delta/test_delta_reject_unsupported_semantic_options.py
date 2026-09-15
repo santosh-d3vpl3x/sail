@@ -42,9 +42,7 @@ def test_rejects_dynamic_partition_overwrite_instead_of_deleting_untouched_parti
     assert _rows(spark.read.format("delta").load(str(table_path)).orderBy("id")) == [(1, "A"), (2, "B")]
 
 
-def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_static_overrides(
-    spark, tmp_path
-):
+def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_static_overrides(spark, tmp_path):
     original = spark.conf.get("spark.sql.sources.partitionOverwriteMode")
     table_path = tmp_path / "delta_dynamic_partition_overwrite_session"
     spark.createDataFrame([(1, "A"), (2, "B")], ["id", "category"]).write.format("delta").partitionBy("category").save(
@@ -56,12 +54,7 @@ def test_session_dynamic_partition_overwrite_is_rejected_at_write_and_writer_sta
         replacement = spark.createDataFrame([(3, "A")], ["id", "category"])
 
         with pytest.raises(Exception, match=_ERROR):
-            (
-                replacement.write.format("delta")
-                .mode("overwrite")
-                .partitionBy("category")
-                .save(str(table_path))
-            )
+            (replacement.write.format("delta").mode("overwrite").partitionBy("category").save(str(table_path)))
 
         assert _rows(spark.read.format("delta").load(str(table_path)).orderBy("id")) == [(1, "A"), (2, "B")]
 
@@ -94,11 +87,7 @@ def test_safe_explicit_defaults_are_accepted(spark, tmp_path):
     )
     assert _rows(spark.read.format("delta").load(str(table_path))) == [(2, "A")]
 
-    assert _rows(
-        spark.read.format("delta")
-        .option("readChangeFeed", "false")
-        .load(str(table_path))
-    ) == [(2, "A")]
+    assert _rows(spark.read.format("delta").option("readChangeFeed", "false").load(str(table_path))) == [(2, "A")]
 
 
 def test_rejects_change_data_feed_options_instead_of_returning_a_snapshot(spark, tmp_path):
