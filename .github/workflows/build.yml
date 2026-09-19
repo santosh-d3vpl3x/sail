@@ -21,6 +21,7 @@ jobs:
       run_catalog_tests: ${{ ((github.event_name == 'pull_request' && (steps.message.outputs.run_catalog_tests == 'true' || steps.label.outputs.run_catalog_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
       run_spark_tests: ${{ ((github.event_name == 'pull_request' && (github.event.action == 'opened' || steps.message.outputs.run_spark_tests == 'true' || steps.label.outputs.run_spark_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
       run_ibis_tests: ${{ ((github.event_name == 'pull_request' && (github.event.action == 'opened' || steps.message.outputs.run_ibis_tests == 'true' || steps.label.outputs.run_ibis_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
+      run_jdbc_tests: ${{ steps.filter.outputs.jdbc == 'true' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -38,6 +39,11 @@ jobs:
               - "clippy.toml"
               - "pyproject.toml"
               - "rustfmt.toml"
+            jdbc:
+              - "python/pysail/spark/datasource/jdbc.py"
+              - "python/pysail/tests/spark/datasource/test_jdbc.py"
+              - "python/pysail/tests/spark/datasource/init.sql"
+              - "pyproject.toml"
 
       - uses: ./.github/actions/commit-baseline
         id: baseline
@@ -138,6 +144,40 @@ jobs:
     needs:
       - setup
       - rust-build
+
+  jdbc-tests:
+    name: JDBC Integration Tests
+    if: ${{ needs.setup.outputs.build_package == 'true' && needs.setup.outputs.run_jdbc_tests == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      HATCH_ENV: "test.spark-4.2.0"
+    needs:
+      - setup
+      - rust-build
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Hatch
+        uses: pypa/hatch@install
+
+      - name: Download Python Package
+        uses: actions/download-artifact@v7
+        with:
+          name: python-package
+          path: target/wheels
+
+      - name: Install PySail
+        run: hatch run install-pysail
+
+      - name: Verify ConnectorX version
+        run: hatch run python -c "import connectorx; print(connectorx.__version__)"
+
+      - name: Run JDBC integration tests
+        run: hatch run pytest -m integration python/pysail/tests/spark/datasource/test_jdbc.py
 
   catalog-tests:
     name: Catalog Integration Tests

@@ -297,6 +297,51 @@ def test_data_types(spark, jdbc_opts):
 
 
 # ---------------------------------------------------------------------------
+# PostgreSQL range types
+# ---------------------------------------------------------------------------
+
+
+def test_postgres_range_types(spark, jdbc_opts):
+    df = spark.read.format("jdbc").option("dbtable", "range_types").options(**jdbc_opts).load().orderBy("id")
+    rows = df.collect()
+
+    assert len(rows) == 5  # noqa: PLR2004
+
+    assert [r.test_int4range for r in rows] == ["[1,11)", "[-5,5)", None, "empty", "(,)"]
+    assert [r.test_int8range for r in rows] == [
+        "[100,1001)",
+        "[-9223372036854775808,0)",
+        None,
+        "empty",
+        "(,)",
+    ]
+    assert [r.test_numrange for r in rows] == ["[1.5,10.0)", "(-Infinity,100]", None, "empty", "(,)"]
+    assert [r.test_tsrange for r in rows] == [
+        '["2020-01-01 00:00:00","2020-12-31 23:59:59")',
+        '["2010-01-01 00:00:00","2015-06-15 12:00:00")',
+        None,
+        "empty",
+        "(,)",
+    ]
+    assert [r.test_daterange for r in rows] == [
+        "[2020-01-01,2021-01-01)",
+        "[2010-01-01,2015-07-01)",
+        None,
+        "empty",
+        "(,)",
+    ]
+
+    # tstzrange rendering includes the PostgreSQL session offset, so keep the
+    # exact timezone representation out of the assertion while still checking
+    # NULL, empty, and unbounded behavior.
+    assert rows[0].test_tstzrange is not None
+    assert rows[1].test_tstzrange is not None
+    assert rows[2].test_tstzrange is None
+    assert rows[3].test_tstzrange == "empty"
+    assert rows[4].test_tstzrange == "(,)"
+
+
+# ---------------------------------------------------------------------------
 # JOIN operations
 # ---------------------------------------------------------------------------
 
