@@ -1,27 +1,17 @@
-name: JDBC Tests
+name: JDBC Integration Tests
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "python/pysail/spark/datasource/jdbc.py"
-      - "python/pysail/tests/spark/datasource/test_jdbc.py"
-      - "python/pysail/tests/spark/datasource/init.sql"
-      - "pyproject.toml"
-      - ".github/workflows/jdbc-tests.yml"
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
 
 jobs:
-  rust-build:
-    name: Rust Build
-    uses: ./.github/workflows/rust-build.yml
-
-  jdbc-tests:
-    name: JDBC Integration Tests
+  test:
+    name: Test
     runs-on: ubuntu-latest
     env:
       HATCH_ENV: "test.spark-4.2.0"
-    needs:
-      - rust-build
     steps:
       - uses: actions/checkout@v7
 
@@ -38,11 +28,15 @@ jobs:
           name: python-package
           path: target/wheels
 
-      - name: Install PySail
-        run: hatch run install-pysail
+      - name: Set Up Hatch Environment
+        run: |
+          hatch run install-pysail
 
-      - name: Verify ConnectorX version
-        run: hatch run python -c "import connectorx; print(connectorx.__version__)"
+      - name: List Python packages
+        continue-on-error: true
+        run: |
+          hatch run uv pip freeze || hatch run python -m pip freeze
 
-      - name: Run JDBC integration tests
-        run: hatch run pytest -m integration --pyargs pysail.tests.spark.datasource.test_jdbc
+      - name: Run JDBC Integration Tests
+        run: |
+          hatch run pytest -m integration --pyargs pysail.tests.spark.datasource.test_jdbc
