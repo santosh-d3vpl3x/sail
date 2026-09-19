@@ -45,4 +45,4 @@ jobs:
         run: hatch run python -c "import connectorx; print(connectorx.__version__)"
 
       - name: Run JDBC integration tests
-        run: hatch run pytest -m integration python/pysail/tests/spark/datasource/test_jdbc.py
+        run: hatch run pytest -m integration --pyargs pysail.tests.spark.datasource.test_jdbc
