@@ -15,7 +15,6 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result, ToDFSchema};
 use datafusion::logical_expr::Expr;
-use datafusion::physical_expr::expressions::NotExpr;
 use datafusion::physical_expr::{LexRequirement, PhysicalExpr};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -169,15 +168,19 @@ async fn build_overwrite_if_plan(
         .to_dfschema()
         .map_err(|e| DataFusionError::External(Box::new(e)))?;
     let condition_expr = condition.expr.clone();
-    let physical_condition = ctx
+    // Rows that do not satisfy replaceWhere must be retained. `NOT predicate` is not
+    // sufficient here because SQL three-valued logic turns `NOT NULL` into NULL and
+    // FilterExec discards NULL. `IS NOT TRUE` preserves both FALSE and NULL rows.
+    let retention_expr = Expr::IsNotTrue(Box::new(condition_expr.clone()));
+    let physical_retention = ctx
         .session()
-        .create_physical_expr(condition_expr.clone(), &table_df_schema)?;
+        .create_physical_expr(retention_expr, &table_df_schema)?;
     let predicate_source = source.or(condition.source);
 
     let old_data_plan = build_old_data_plan(
         ctx,
         condition_expr.clone(),
-        physical_condition.clone(),
+        physical_retention,
         &snapshot_state,
         table_schema.clone(),
     )
@@ -280,7 +283,7 @@ async fn build_overwrite_if_plan(
 async fn build_old_data_plan(
     ctx: &PlannerContext<'_>,
     condition_expr: Expr,
-    condition: Arc<dyn PhysicalExpr>,
+    retention_condition: Arc<dyn PhysicalExpr>,
     snapshot_state: &DeltaSnapshot,
     table_schema: SchemaRef,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -332,8 +335,7 @@ async fn build_old_data_plan(
         snapshot_state.load_config().catalog_managed_commits.clone(),
     ));
 
-    let negated_condition = Arc::new(NotExpr::new(condition));
-    let filter_exec = Arc::new(FilterExec::try_new(negated_condition, scan_exec)?);
+    let filter_exec = Arc::new(FilterExec::try_new(retention_condition, scan_exec)?);
 
     Ok(filter_exec)
 }
