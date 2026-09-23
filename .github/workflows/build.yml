@@ -19,6 +19,7 @@ jobs:
       build_package: ${{ github.event_name == 'push' || steps.filter.outputs.package == 'true' || steps.baseline-workflow.outputs.workflow_run_id == '' }}
       baseline_run_id: ${{ steps.baseline-workflow.outputs.workflow_run_id }}
       run_catalog_tests: ${{ ((github.event_name == 'pull_request' && (steps.message.outputs.run_catalog_tests == 'true' || steps.label.outputs.run_catalog_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
+      run_jdbc_tests: ${{ ((github.event_name == 'pull_request' && (steps.message.outputs.run_jdbc_tests == 'true' || steps.label.outputs.run_jdbc_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
       run_spark_tests: ${{ ((github.event_name == 'pull_request' && (github.event.action == 'opened' || steps.message.outputs.run_spark_tests == 'true' || steps.label.outputs.run_spark_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
       run_ibis_tests: ${{ ((github.event_name == 'pull_request' && (github.event.action == 'opened' || steps.message.outputs.run_ibis_tests == 'true' || steps.label.outputs.run_ibis_tests == 'true')) || github.event_name == 'push') && 'true' || 'false' }}
     steps:
@@ -62,6 +63,7 @@ jobs:
             });
             const patterns = [
                 { name: 'run_catalog_tests', pattern: "\\[catalog tests?\\]", flags: "i" },
+                { name: 'run_jdbc_tests', pattern: "\\[jdbc tests?\\]", flags: "i" },
                 { name: 'run_spark_tests', pattern: "\\[(spark )?tests?\\]", flags: "i" },
                 { name: 'run_ibis_tests', pattern: "\\[(ibis )?tests?\\]", flags: "i" },
             ];
@@ -76,6 +78,7 @@ jobs:
           script: |
             const labels = context.payload.pull_request?.labels?.map(label => label.name) || [];
             core.setOutput('run_catalog_tests', labels.includes('run catalog tests') ? 'true' : 'false');
+            core.setOutput('run_jdbc_tests', labels.includes('run jdbc tests') ? 'true' : 'false');
             core.setOutput('run_spark_tests', labels.includes('run spark tests') ? 'true' : 'false');
             core.setOutput('run_ibis_tests', labels.includes('run ibis tests') ? 'true' : 'false');
 
@@ -149,6 +152,16 @@ jobs:
       - setup
       - rust-build
 
+  jdbc-tests:
+    name: JDBC Integration Tests
+    if: ${{ needs.setup.outputs.build_package == 'true' && needs.setup.outputs.run_jdbc_tests == 'true' }}
+    uses: ./.github/workflows/jdbc-tests.yml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    needs:
+      - setup
+      - rust-build
+
   codecov-notify:
     name: Codecov Notify
     if: ${{ !cancelled() && github.actor != 'dependabot[bot]' }}
@@ -159,6 +172,7 @@ jobs:
       - spark-tests
       - ibis-tests
       - catalog-tests
+      - jdbc-tests
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
