@@ -1,6 +1,7 @@
 use datafusion_expr::LogicalPlan;
 use sail_common::spec;
 
+use crate::config::PartitionOverwriteMode;
 use crate::error::{PlanError, PlanResult};
 use crate::resolver::PlanResolver;
 use crate::resolver::command::write::{WriteColumnMatch, WriteMode, WritePlanBuilder, WriteTarget};
@@ -24,8 +25,25 @@ impl PlanResolver<'_> {
             partitioning_columns,
             clustering_columns,
             bucket_by,
-            options,
+            mut options,
         } = write;
+
+        let has_partition_overwrite_option = options.iter().any(|(key, _)| {
+            key.eq_ignore_ascii_case("partitionOverwriteMode")
+                || key.eq_ignore_ascii_case("partition_overwrite_mode")
+        });
+        if matches!(mode, Some(SaveMode::Overwrite))
+            && !has_partition_overwrite_option
+            && matches!(
+                self.config.partition_overwrite_mode,
+                PartitionOverwriteMode::Dynamic
+            )
+        {
+            // Spark gives an explicit writer option precedence over the session setting. Carry the
+            // session value into the write options only when the writer did not specify one, so the
+            // target data source can decide whether it implements the requested semantics.
+            options.push(("partitionOverwriteMode".to_string(), "dynamic".to_string()));
+        }
 
         let replace_where = options.iter().find_map(|(k, v)| {
             if k.eq_ignore_ascii_case("replaceWhere") || k.eq_ignore_ascii_case("replace_where") {

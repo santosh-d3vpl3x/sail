@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sail_plan::config::{
-    DefaultTimestampType, MapKeyDedupPolicy, PlanConfig, StoreAssignmentPolicy,
+    DefaultTimestampType, MapKeyDedupPolicy, PartitionOverwriteMode, PlanConfig,
+    StoreAssignmentPolicy,
 };
 use sail_python_udf::config::PySparkUdfConfig;
 
@@ -48,8 +49,6 @@ impl SparkRuntimeConfig {
             Ok(version) => {
                 let mut parts = version.split('.');
                 match (parts.next(), parts.next()) {
-                    // Use the Spark 3.5 configuration to provide best-effort support
-                    // for all 3.x versions.
                     (Some("3"), _) => &SPARK_CONFIG_V3_5,
                     (Some("4"), Some("0")) => &SPARK_CONFIG_V4_0,
                     (Some("4"), Some("1")) => &SPARK_CONFIG_V4_1,
@@ -61,11 +60,7 @@ impl SparkRuntimeConfig {
                     }
                 }
             }
-            Err(_) => {
-                // Use the earliest Spark configuration when we cannot determine the PySpark version,
-                // which can happen when running Rust tests for example.
-                &SPARK_CONFIG_V3_5
-            }
+            Err(_) => &SPARK_CONFIG_V3_5,
         };
         Ok(Self {
             entries,
@@ -86,8 +81,6 @@ impl SparkRuntimeConfig {
     }
 
     fn get_by_key(&self, key: &str) -> Option<&str> {
-        // TODO: Spark allows variable substitution via Java system properties, environment variables,
-        //   or other configuration values. This is not supported here.
         if let Some(value) = self.config.get(key) {
             return Some(value.as_str());
         }
@@ -214,9 +207,6 @@ pub(crate) fn get_pyspark_version() -> SparkResult<String> {
     .map_err(|e: pyo3::PyErr| SparkError::invalid(format!("failed to get PySpark version: {e}")))
 }
 
-// We must use `get_option` when extracting values from `SparkRuntimeConfig`
-// since not all configuration keys are supported in all versions of Spark.
-
 impl TryFrom<&SparkRuntimeConfig> for PlanConfig {
     type Error = SparkError;
 
@@ -290,6 +280,18 @@ impl TryFrom<&SparkRuntimeConfig> for PlanConfig {
                 _ => {
                     return Err(SparkError::invalid(format!(
                         "invalid map key dedup policy: {value}"
+                    )));
+                }
+            };
+        }
+
+        if let Some(value) = config.get_option("spark.sql.sources.partitionOverwriteMode") {
+            output.partition_overwrite_mode = match value.trim().to_ascii_lowercase().as_str() {
+                "static" => PartitionOverwriteMode::Static,
+                "dynamic" => PartitionOverwriteMode::Dynamic,
+                _ => {
+                    return Err(SparkError::invalid(format!(
+                        "invalid partition overwrite mode: {value}"
                     )));
                 }
             };
