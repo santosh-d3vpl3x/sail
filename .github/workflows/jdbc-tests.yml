@@ -1,0 +1,42 @@
+name: JDBC Integration Tests
+
+on:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      HATCH_ENV: "test.spark-4.2.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Hatch
+        uses: pypa/hatch@install
+
+      - name: Download Python Package
+        uses: actions/download-artifact@v7
+        with:
+          name: python-package
+          path: target/wheels
+
+      - name: Set Up Hatch Environment
+        run: |
+          hatch run install-pysail
+
+      - name: List Python packages
+        continue-on-error: true
+        run: |
+          hatch run uv pip freeze || hatch run python -m pip freeze
+
+      - name: Run JDBC Integration Tests
+        run: |
+          hatch run pytest -m integration --pyargs pysail.tests.spark.datasource.test_jdbc
