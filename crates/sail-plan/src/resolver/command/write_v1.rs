@@ -1,5 +1,8 @@
 use datafusion_expr::LogicalPlan;
+use sail_catalog::error::CatalogError;
+use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
+use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use crate::error::{PlanError, PlanResult};
 use crate::resolver::PlanResolver;
@@ -105,44 +108,36 @@ impl PlanResolver<'_> {
             SaveType::Table {
                 table,
                 save_method: TableSaveMethod::SaveAsTable,
-            } => match mode {
-                Some(SaveMode::ErrorIfExists) | None => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::ErrorIfExists);
-                }
-                Some(SaveMode::IgnoreIfExists) => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::IgnoreIfExists);
-                }
-                Some(SaveMode::Append) => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::Append {
+            } => {
+                // saveAsTable(overwrite + replaceWhere) is create-on-absent in Spark's V1 API.
+                // Preserve that lifecycle behavior while using conditional overwrite semantics
+                // for an existing target.
+                let mode = if matches!(mode, Some(SaveMode::Overwrite)) && replace_where.is_some() {
+                    // Parse the predicate before checking the catalog so malformed
+                    // replaceWhere options are rejected for missing tables too.
+                    let conditional_mode = to_write_mode(mode)?;
+                    match self
+                        .ctx
+                        .extension::<CatalogManager>()?
+                        .get_table(table.parts())
+                        .await
+                    {
+                        Ok(_) => conditional_mode,
+                        Err(CatalogError::NotFound(_, _)) => WriteMode::Replace {
                             error_if_absent: false,
-                        });
-                }
-                Some(SaveMode::Overwrite) => {
-                    builder = builder
-                        .with_target(WriteTarget::Table {
-                            table,
-                            column_match: WriteColumnMatch::ByName,
-                        })
-                        .with_mode(WriteMode::Replace {
-                            error_if_absent: false,
-                        });
-                }
-            },
+                        },
+                        Err(e) => return Err(e.into()),
+                    }
+                } else {
+                    to_write_mode(mode)?
+                };
+                builder = builder
+                    .with_target(WriteTarget::Table {
+                        table,
+                        column_match: WriteColumnMatch::ByName,
+                    })
+                    .with_mode(mode);
+            }
             SaveType::Table {
                 table,
                 save_method: TableSaveMethod::InsertInto,
