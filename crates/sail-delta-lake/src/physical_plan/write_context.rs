@@ -132,6 +132,34 @@ enum SchemaMode {
     Overwrite,
 }
 
+fn select_write_operation(
+    planned: Option<DeltaOperation>,
+    operation_override: Option<DeltaOperation>,
+) -> Option<DeltaOperation> {
+    let Some(operation_override) = operation_override else {
+        return planned;
+    };
+
+    match (planned.as_ref(), operation_override) {
+        (
+            Some(DeltaOperation::Write {
+                predicate: Some(planned_predicate),
+                ..
+            }),
+            DeltaOperation::Write {
+                mode,
+                partition_by,
+                predicate: None,
+            },
+        ) => Some(DeltaOperation::Write {
+            mode,
+            partition_by,
+            predicate: Some(planned_predicate.clone()),
+        }),
+        (_, operation_override) => Some(operation_override),
+    }
+}
+
 #[expect(clippy::too_many_arguments)]
 pub fn prepare_delta_write_context(
     table_url: &Url,
@@ -290,7 +318,7 @@ pub fn prepare_delta_write_context(
         effective_column_mapping_mode: effective_mode,
         initial_actions,
         schema_actions,
-        operation: operation_override.or(operation),
+        operation: select_write_operation(operation, operation_override),
         logical_kernel_for_mapping,
         physical_partition_columns,
     })
@@ -364,15 +392,20 @@ fn operation_for_sink_mode(
             partition_by,
             predicate: None,
         }),
+        // Full overwrite reads/replaces the entire target. Record an explicit TRUE predicate so
+        // commit/retry classification cannot mistake an add-only overwrite for a blind append.
         PhysicalSinkMode::Overwrite => Some(DeltaOperation::Write {
             mode: SaveMode::Overwrite,
             partition_by,
-            predicate: None,
+            predicate: Some("true".to_string()),
         }),
+        // V2 overwrite(condition) does not always carry source SQL text. In that case use TRUE as
+        // a conservative read dependency: it may reject additional concurrent writes, but it must
+        // never rebase a mutation as a blind append.
         PhysicalSinkMode::OverwriteIf { source, .. } => Some(DeltaOperation::Write {
             mode: SaveMode::Overwrite,
             partition_by,
-            predicate: source.clone(),
+            predicate: source.clone().or_else(|| Some("true".to_string())),
         }),
         PhysicalSinkMode::ErrorIfExists | PhysicalSinkMode::IgnoreIfExists => None,
         PhysicalSinkMode::OverwritePartitions => Some(DeltaOperation::Write {
@@ -622,5 +655,78 @@ mod tests {
             Some("2")
         );
         Ok(())
+    }
+
+    #[test]
+    fn operation_override_cannot_clear_conservative_mutation_predicate() {
+        let table_url = Url::parse("memory:///table").expect("table url");
+        let planned = operation_for_sink_mode(
+            &table_url,
+            &[],
+            &PhysicalSinkMode::OverwriteIf {
+                condition: None,
+                source: None,
+            },
+        );
+        let operation_override = Some(DeltaOperation::Write {
+            mode: SaveMode::Overwrite,
+            partition_by: None,
+            predicate: None,
+        });
+
+        let selected =
+            select_write_operation(planned, operation_override).expect("selected operation");
+        assert!(matches!(
+            selected,
+            DeltaOperation::Write {
+                predicate: Some(ref predicate),
+                ..
+            } if predicate == "true"
+        ));
+    }
+
+    #[test]
+    fn mutation_write_operations_are_never_blind_append_candidates() {
+        let table_url = Url::parse("memory:///table").expect("table url");
+
+        let append = operation_for_sink_mode(&table_url, &[], &PhysicalSinkMode::Append)
+            .expect("append operation");
+        assert!(matches!(
+            append,
+            DeltaOperation::Write {
+                mode: SaveMode::Append,
+                predicate: None,
+                ..
+            }
+        ));
+
+        let overwrite = operation_for_sink_mode(&table_url, &[], &PhysicalSinkMode::Overwrite)
+            .expect("overwrite operation");
+        assert!(matches!(
+            overwrite,
+            DeltaOperation::Write {
+                mode: SaveMode::Overwrite,
+                predicate: Some(ref predicate),
+                ..
+            } if predicate == "true"
+        ));
+
+        let conditional = operation_for_sink_mode(
+            &table_url,
+            &[],
+            &PhysicalSinkMode::OverwriteIf {
+                condition: None,
+                source: None,
+            },
+        )
+        .expect("conditional overwrite operation");
+        assert!(matches!(
+            conditional,
+            DeltaOperation::Write {
+                mode: SaveMode::Overwrite,
+                predicate: Some(ref predicate),
+                ..
+            } if predicate == "true"
+        ));
     }
 }
